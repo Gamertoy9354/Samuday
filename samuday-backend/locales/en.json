@@ -1,0 +1,20 @@
+{
+  "auth.otp.sent": "OTP sent successfully.",
+  "auth.otp.invalid": "Invalid or expired OTP.",
+  "auth.otp.rate_limit": "Too many requests. Please try again later.",
+  "auth.unauthorized": "Unauthorized access.",
+  "listing.create.success": "Listing created successfully.",
+  "listing.not_found": "Listing not found.",
+  "wallet.insufficient_balance": "Insufficient wallet balance.",
+  "wallet.not_found": "Wallet not found.",
+  "order.created": "Order created and funds placed in escrow.",
+  "order.not_found": "Order not found.",
+  "escrow.released": "Escrow funds released to the seller.",
+  "escrow.refunded": "Escrow funds refunded to the buyer.",
+  "kyc.submitted": "KYC documents submitted successfully.",
+  "kyc.approved": "KYC verification approved.",
+  "kyc.rejected": "KYC verification rejected.",
+  "vouch.success": "Vouch submitted successfully.",
+  "vouch.self": "You cannot vouch for yourself.",
+  "chat.sent": "Message sent."
+}
