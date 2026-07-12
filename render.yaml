@@ -8,30 +8,96 @@ services:
   - type: web
     name: samuday-backend
     runtime: python
+    plan: free
     rootDir: samuday-backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /docs
+    healthCheckPath: /
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.8
       - key: ENVIRONMENT
         value: production
+
+      # --- Database (Supabase Postgres — set these to your Supavisor session-pooler URLs) ---
       - key: DATABASE_URL
         sync: false
       - key: SYNC_DATABASE_URL
         sync: false
-      - key: JWT_SECRET_KEY
+
+      # --- Cache / OTP store (wired to the Key Value service below) ---
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: samuday-redis
+          property: connectionString
+
+      # --- Auth secrets ---
+      - key: JWT_SECRET
         generateValue: true
+      - key: PAYMENT_WEBHOOK_SECRET
+        generateValue: true
+      # PII_ENCRYPTION_KEY MUST be a valid Fernet key (not Render's generateValue,
+      # which isn't guaranteed to match Fernet's exact format). Generate one with:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
       - key: PII_ENCRYPTION_KEY
-        generateValue: true
+        sync: false
+
+      # --- OTP: must be false in production. A real SMS gateway is NOT integrated —
+      # phone login will safely reject (not bypass) OTP checks until one is added. ---
+      - key: MOCK_OTP
+        value: "false"
+
+      # --- Google Sign-In ---
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
+
+      # --- URLs (BACKEND_URL is used to build links to uploaded/AI-generated images) ---
       - key: FRONTEND_URL
+        value: https://samuday.rngpitai.com
+      # Render assigns web services https://<name>.onrender.com unless you attach
+      # a custom domain to this service too — update if you do.
+      - key: BACKEND_URL
+        value: https://samuday-backend.onrender.com
+
+      # --- AI providers — the app fails to start if these are unset ---
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # --- Supabase Storage (uploaded/AI-generated images) ---
+      - key: SUPABASE_URL
+        value: https://sgflswivzutynuzsrafi.supabase.co
+      # Project Settings -> API Keys -> service_role (secret). Full admin access —
+      # never expose this to the frontend.
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+      # --- Delhivery (optional). Empty = shipping runs in simulated/estimated
+      # mode (clearly labeled to users) until a real Delhivery account is added. ---
+      - key: DELHIVERY_API_KEY
+        sync: false
+
+      # --- Google Maps (optional). Empty = GPS/address lookup uses free
+      # OpenStreetMap Nominatim instead — no billing required either way. ---
+      - key: GOOGLE_MAPS_API_KEY
         sync: false
 
   # -------------------------------------------------------------
-  # 2. React Vite Frontend Static Site
+  # 2. Key Value store (Redis-compatible) — required for OTP login
+  # -------------------------------------------------------------
+  - type: keyvalue
+    name: samuday-redis
+    plan: free
+    ipAllowList: [] # private-network access only (from samuday-backend), no public exposure
+
+  # -------------------------------------------------------------
+  # 3. React Vite Frontend Static Site
   # -------------------------------------------------------------
   - type: static
     name: samuday-frontend

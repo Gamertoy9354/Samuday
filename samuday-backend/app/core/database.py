@@ -44,7 +44,8 @@ async def init_db():
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS kutumb;"))
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS enterprise;"))
         await conn.execute(text("CREATE SCHEMA IF NOT EXISTS promotions;"))
-        
+        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS shipping;"))
+
         # Import models locally inside the initialization function to avoid circular imports
         from app.identity.models import Base as IdentityBase
         from app.wallet.models import Base as WalletBase
@@ -55,6 +56,7 @@ async def init_db():
         from app.enterprise.models import Base as EnterpriseBase
         from app.promotions.models import Base as PromotionsBase
         from app.cart.models import Base as CartBase
+        from app.shipping.models import Base as ShippingBase
         
         # Create all tables registered with the Base
         await conn.run_sync(Base.metadata.create_all)

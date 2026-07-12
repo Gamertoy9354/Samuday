@@ -4,7 +4,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from app.core.database import get_db
-from app.core.security import get_current_user, decrypt_pii
+from app.core.security import get_current_user, get_current_admin_user, decrypt_pii
 from app.identity.models import User
 from app.seva.models import ProviderCredential
 from app.seva import service
@@ -70,18 +70,21 @@ async def submit_credentials_route(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Files professional certification credentials for verification."""
-    credential = await service.submit_provider_credentials(db, provider_id, payload)
+    """Files professional certification credentials for verification. Only the provider owner may submit."""
+    try:
+        credential = await service.submit_provider_credentials(db, provider_id, payload, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     return map_credential_response(credential)
 
 @router.post("/admin/credentials/{credential_id}/verify", response_model=ProviderCredentialResponse)
 async def verify_credential_route(
     credential_id: UUID,
     admin_action: str = Query(..., description="Action to perform: 'approved' or 'rejected'"),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Admin endpoint to approve or reject a pending professional credential."""
+    """Admin-only endpoint to approve or reject a pending professional credential."""
     if admin_action not in ["approved", "rejected"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

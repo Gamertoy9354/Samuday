@@ -24,6 +24,8 @@ from app.enterprise.router import router as enterprise_router
 from app.promotions.router import router as promotions_router
 from app.cart.router import router as cart_router
 from app.ai.router import router as ai_router
+from app.shipping.router import router as shipping_router
+from app.admin.router import router as admin_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -68,6 +70,8 @@ app.include_router(enterprise_router, prefix="/api/v1")
 app.include_router(promotions_router, prefix="/api/v1")
 app.include_router(cart_router, prefix="/api/v1")
 app.include_router(ai_router, prefix="/api/v1")
+app.include_router(shipping_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

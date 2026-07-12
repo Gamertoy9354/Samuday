@@ -78,11 +78,12 @@ async def request_payout(
 @router.post("/payment/checkout", status_code=status.HTTP_201_CREATED)
 async def create_payment_checkout_endpoint(
     amount: int = Query(..., ge=1, description="Amount to deposit in paise"),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """Generates a payment order and a checkout redirect URL."""
     from app.wallet import payment
-    checkout = payment.create_payment_checkout(amount, current_user.id)
+    checkout = await payment.create_payment_checkout(db, amount, current_user.id)
     return checkout
 
 @router.post("/payment/callback")
@@ -90,26 +91,25 @@ async def verify_payment_callback_endpoint(
     gateway_order_id: str = Query(...),
     payment_id: str = Query(...),
     signature: str = Query(...),
-    amount: int = Query(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Processes successful checkout callbacks and credits the wallet balance."""
+    """Processes successful checkout callbacks and credits the wallet balance.
+    The credited amount is always the one fixed at checkout time, never client input."""
     from app.wallet import payment
-    success = await payment.callback_payment_verification(
+    credited_amount = await payment.callback_payment_verification(
         db=db,
         gateway_order_id=gateway_order_id,
         payment_id=payment_id,
         signature=signature,
         user_id=current_user.id,
-        amount_paise=amount
     )
-    if not success:
+    if credited_amount is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Payment verification failed"
         )
-    
+
     # Audit log credit
     try:
         from app.enterprise.service import log_audit_action
@@ -118,7 +118,7 @@ async def verify_payment_callback_endpoint(
             action_type="wallet_credit",
             actor_id=current_user.id,
             entity_id=current_user.id,
-            metadata_dict={"amount_paise": amount}
+            metadata_dict={"amount_paise": credited_amount}
         )
         await db.commit()
     except Exception as e:

@@ -2,19 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { marketAPI } from '../api/client';
 import { ProductCard } from '../components/product/ProductCard';
+import { UserCheck } from 'lucide-react';
 
 interface Listing {
   id: string; title: string; price: number; media: Array<{ media_url: string }>; category_id?: string;
+  rating_avg?: number | null; review_count?: number; active_discount_percent?: number | null;
 }
 
 interface Category {
   id: string; name: string;
-}
-
-function pseudoRating(id: string) {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) { hash = ((hash << 5) - hash) + id.charCodeAt(i); hash |= 0; }
-  return { rating: Math.min(3.5 + (Math.abs(hash) % 15) / 10, 4.9), reviews: 100 + (Math.abs(hash) % 9900) };
 }
 
 export const SearchPage: React.FC = () => {
@@ -22,6 +18,7 @@ export const SearchPage: React.FC = () => {
   const query = searchParams.get('q') || '';
   const categoryId = searchParams.get('category') || '';
   const categoryName = searchParams.get('name') || '';
+  const sellerTier = searchParams.get('seller_tier') || '';
 
   const [listings, setListings] = useState<Listing[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -33,24 +30,28 @@ export const SearchPage: React.FC = () => {
     marketAPI.getCategories().then(setCategories).catch(() => {});
   }, []);
 
+  // Keep the category checkboxes in sync when navigating in from a category link
+  useEffect(() => {
+    setSelectedCats(categoryId ? [categoryId] : []);
+  }, [categoryId]);
+
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams();
     if (query) params.set('query', query);
-    if (categoryId) params.set('category_id', categoryId);
-    marketAPI.getListings(params.toString()).then(setListings).catch(() => {}).finally(() => setLoading(false));
-  }, [query, categoryId]);
+    if (sellerTier) params.set('seller_tier', sellerTier);
+    marketAPI.getListings(params.toString()).then(setListings).catch(() => setListings([])).finally(() => setLoading(false));
+  }, [query, sellerTier]);
 
+  // The backend already matches `query` against title, description, and category name,
+  // so results are only narrowed further by the category checkboxes here.
   let filteredListings = listings;
-  if (selectedCats.length > 0 && !categoryId) {
+  if (selectedCats.length > 0) {
     filteredListings = listings.filter(l => l.category_id && selectedCats.includes(l.category_id));
   }
-  if (query) {
-    const q = query.toLowerCase();
-    filteredListings = filteredListings.filter(l => l.title.toLowerCase().includes(q));
-  }
 
-  // Sort
+  // Sort (copy first — Array.sort mutates in place, and `filteredListings` may still be the `listings` state array)
+  filteredListings = [...filteredListings];
   if (sortBy === 'price_low') filteredListings.sort((a, b) => a.price - b.price);
   else if (sortBy === 'price_high') filteredListings.sort((a, b) => b.price - a.price);
 
@@ -58,10 +59,23 @@ export const SearchPage: React.FC = () => {
     setSelectedCats(prev => prev.includes(catId) ? prev.filter(c => c !== catId) : [...prev, catId]);
   };
 
-  const title = query ? `Results for "${query}"` : categoryName || 'All Products';
+  const title = query ? `Results for "${query}"` : categoryName || (sellerTier === 'local' ? 'Local Marketplace' : 'All Products');
 
   return (
     <div className="page-content" style={{ paddingTop: 16 }}>
+      {sellerTier === 'local' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '12px 18px', marginBottom: 14,
+          background: 'linear-gradient(135deg, var(--accent-light), var(--bg-white))', border: '1px solid var(--accent)',
+          borderRadius: 'var(--radius-md)',
+        }}>
+          <UserCheck size={22} color="var(--accent-dark)" />
+          <div>
+            <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>Local Marketplace</div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Products from verified small & local sellers in your community</div>
+          </div>
+        </div>
+      )}
       <div className="search-layout">
         {/* Sidebar Filters */}
         <aside className="search-sidebar">
@@ -120,21 +134,18 @@ export const SearchPage: React.FC = () => {
             </div>
           ) : (
             <div className="products-grid">
-              {filteredListings.map(l => {
-                const { rating, reviews } = pseudoRating(l.id);
-                return (
-                  <ProductCard
-                    key={l.id}
-                    id={l.id}
-                    title={l.title}
-                    price={l.price}
-                    imageUrl={l.media?.[0]?.media_url}
-                    rating={rating}
-                    reviewCount={reviews}
-                    discountPercent={Math.random() > 0.6 ? Math.floor(10 + Math.random() * 40) : undefined}
-                  />
-                );
-              })}
+              {filteredListings.map(l => (
+                <ProductCard
+                  key={l.id}
+                  id={l.id}
+                  title={l.title}
+                  price={l.price}
+                  imageUrl={l.media?.[0]?.media_url}
+                  rating={l.rating_avg ?? undefined}
+                  reviewCount={l.review_count}
+                  discountPercent={l.active_discount_percent ?? undefined}
+                />
+              ))}
             </div>
           )}
         </div>

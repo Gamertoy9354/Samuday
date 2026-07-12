@@ -1,3 +1,4 @@
+import os
 import pytest
 import pytest_asyncio
 import asyncio
@@ -31,8 +32,29 @@ def event_loop():
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def setup_database():
     """Initializes schemas and database tables once before executing tests."""
+    # This fixture runs `TRUNCATE ... CASCADE` on identity.users (and everything
+    # keyed off it: wallets, KYC, orders, listings...) directly against whatever
+    # DATABASE_URL points to. There is no separate test database in this project.
+    # TRUNCATE is unconditional — it deletes EVERY row, including real accounts
+    # created by actually logging into the app (Google Sign-In etc.), not just
+    # seeded demo data. This has already happened once and wiped a real user's
+    # account with no way to recover it. Require explicit, well-understood opt-in.
+    if os.environ.get("ALLOW_TEST_DB_TRUNCATE", "").lower() not in ("1", "true", "yes"):
+        pytest.exit(
+            "Refusing to run: this test suite deletes ALL rows in identity.users "
+            "(and everything cascading from it — wallets, KYC, orders, listings) "
+            "on DATABASE_URL. If that's the shared SAMUDAY Supabase project, this "
+            "will destroy real user accounts, not just demo data, with no way to "
+            "recover them. Only set ALLOW_TEST_DB_TRUNCATE=1 if DATABASE_URL points "
+            "at a disposable test database, or if you have explicitly confirmed "
+            "with the project owner that destroying all current accounts is fine "
+            "right now. Afterwards, re-run `python -m app.seed_demo` to restore "
+            "the demo catalog (this does NOT restore any real user accounts).",
+            returncode=1
+        )
+
     await init_db()
-    
+
     # Use a separate temporary engine on the session loop to clean up tables
     # without initializing the module-level engine's connection pool.
     temp_engine = create_async_engine(settings.DATABASE_URL, echo=False)
@@ -45,6 +67,7 @@ async def setup_database():
         await conn.execute(text("TRUNCATE TABLE wallet.ledger_entries CASCADE;"))
         await conn.execute(text("TRUNCATE TABLE wallet.payout_requests CASCADE;"))
         await conn.execute(text("TRUNCATE TABLE wallet.escrow_holds CASCADE;"))
+        await conn.execute(text("TRUNCATE TABLE wallet.payment_orders CASCADE;"))
         await conn.execute(text("TRUNCATE TABLE enterprise.supplier_profiles CASCADE;"))
         await conn.execute(text("TRUNCATE TABLE enterprise.audit_logs CASCADE;"))
         await conn.execute(text("TRUNCATE TABLE kutumb.families CASCADE;"))
@@ -66,6 +89,20 @@ async def setup_database():
         await conn.execute(text("TRUNCATE TABLE marketplace.cart_items CASCADE;"))
         await conn.execute(text("TRUNCATE TABLE promotions.sale_events CASCADE;"))
         await conn.execute(text("TRUNCATE TABLE promotions.advertisements CASCADE;"))
+
+        # Bootstrap the platform "house" account that accrues platform/delivery
+        # fee revenue on order completion (app/marketplace/fees.py). Without it,
+        # release_escrow raises "Platform house wallet not found" for every order
+        # test, since the TRUNCATEs above just wiped identity.users/wallet.wallets.
+        from app.marketplace.fees import PLATFORM_HOUSE_USER_ID
+        await conn.execute(text("""
+            INSERT INTO identity.users (id, full_name, email, is_seller, is_admin, preferred_language, status, seller_verification_status, created_at)
+            VALUES (:id, 'Samuday Platform (House Account)', 'platform@samuday.internal', false, true, 'en', 'active', 'approved', now())
+        """), {"id": str(PLATFORM_HOUSE_USER_ID)})
+        await conn.execute(text("""
+            INSERT INTO wallet.wallets (id, user_id, balance, currency, status, created_at)
+            VALUES (gen_random_uuid(), :id, 0, 'INR', 'active', now())
+        """), {"id": str(PLATFORM_HOUSE_USER_ID)})
     await temp_engine.dispose()
     yield
     # Truncate tables for cleanup is handled per test using rolling-back transactions

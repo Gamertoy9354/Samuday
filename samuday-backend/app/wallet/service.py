@@ -189,8 +189,23 @@ async def hold_escrow(db: AsyncSession, buyer_id: UUID, amount: int, transaction
     await db.flush()
     return hold
 
-async def release_escrow(db: AsyncSession, transaction_id: UUID, seller_id: UUID) -> EscrowHold:
-    """Releases the locked escrow amount, crediting it to the seller's wallet."""
+async def release_escrow(
+    db: AsyncSession,
+    transaction_id: UUID,
+    seller_id: UUID,
+    platform_fee_amount: int = 0,
+    delivery_fee_amount: int = 0,
+) -> EscrowHold:
+    """
+    Releases the locked escrow amount on order completion, split three ways:
+    - seller gets the product amount (hold.amount minus the two fee amounts below)
+    - the platform house wallet gets platform_fee_amount (real Samuday revenue)
+    - the platform house wallet also gets delivery_fee_amount, tracked under a
+      separate reference_type since it's a pass-through liability owed to the
+      courier, not platform profit, once real Delhivery billing is connected.
+    """
+    from app.marketplace.fees import PLATFORM_HOUSE_USER_ID
+
     res = await db.execute(
         select(EscrowHold).where(
             and_(EscrowHold.transaction_id == transaction_id, EscrowHold.status == "held")
@@ -204,10 +219,27 @@ async def release_escrow(db: AsyncSession, transaction_id: UUID, seller_id: UUID
     if not seller_wallet:
         raise ValueError("Seller wallet not found.")
 
-    # Credit seller's wallet
-    await record_transaction(
-        db, seller_wallet.id, hold.amount, "credit", "escrow_release", transaction_id
-    )
+    seller_amount = hold.amount - platform_fee_amount - delivery_fee_amount
+    if seller_amount < 0:
+        raise ValueError("Fee amounts exceed the escrowed total.")
+
+    if seller_amount > 0:
+        await record_transaction(
+            db, seller_wallet.id, seller_amount, "credit", "escrow_release", transaction_id
+        )
+
+    if platform_fee_amount > 0 or delivery_fee_amount > 0:
+        house_wallet = await get_wallet_by_user_id(db, PLATFORM_HOUSE_USER_ID)
+        if not house_wallet:
+            raise ValueError("Platform house wallet not found.")
+        if platform_fee_amount > 0:
+            await record_transaction(
+                db, house_wallet.id, platform_fee_amount, "credit", "platform_fee", transaction_id
+            )
+        if delivery_fee_amount > 0:
+            await record_transaction(
+                db, house_wallet.id, delivery_fee_amount, "credit", "delivery_fee_collected", transaction_id
+            )
 
     hold.status = "released"
     hold.released_at = datetime.now(timezone.utc)

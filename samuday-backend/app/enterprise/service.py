@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enterprise.models import SupplierProfile, AuditLog
 from app.enterprise.schemas import SupplierProfileCreate, SupplierDashboardMetrics
+from app.identity.models import User
 from app.marketplace.models import Order, Listing, Booking
 from app.kisan.models import CropListing
 
@@ -18,19 +19,76 @@ async def create_supplier_profile(
     user_id: UUID,
     profile_in: SupplierProfileCreate
 ) -> SupplierProfile:
-    """Registers a commercial supplier business profile."""
-    # Check if profile already exists
+    """Registers a commercial (Official-tier) supplier business profile for admin review."""
     existing = await get_supplier_profile(db, user_id)
     if existing:
-        return existing
+        # Allow re-submission after a rejection
+        if existing.verification_status == "rejected":
+            existing.business_name = profile_in.business_name
+            existing.gstin = profile_in.gstin
+            existing.pan = profile_in.pan
+            existing.business_phone = profile_in.business_phone
+            existing.business_address = profile_in.business_address
+            existing.pincode = profile_in.pincode
+            existing.verification_status = "pending"
+            existing.rejection_reason = None
+            await db.commit()
+            await db.refresh(existing)
+        else:
+            return existing
+    else:
+        existing = SupplierProfile(
+            user_id=user_id,
+            business_name=profile_in.business_name,
+            gstin=profile_in.gstin,
+            pan=profile_in.pan,
+            business_phone=profile_in.business_phone,
+            business_address=profile_in.business_address,
+            pincode=profile_in.pincode,
+            is_verified=False,
+            verification_status="pending",
+        )
+        db.add(existing)
+        await db.commit()
+        await db.refresh(existing)
 
-    profile = SupplierProfile(
-        user_id=user_id,
-        business_name=profile_in.business_name,
-        gstin=profile_in.gstin,
-        is_verified=False
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalars().first()
+    if user:
+        user.seller_tier = "official"
+        user.is_seller = True
+        user.seller_verification_status = "pending"
+        await db.commit()
+
+    return existing
+
+async def list_pending_supplier_verifications(db: AsyncSession) -> List[SupplierProfile]:
+    """Admin: lists pending Official-tier business verifications for review."""
+    result = await db.execute(
+        select(SupplierProfile).where(SupplierProfile.verification_status == "pending").order_by(SupplierProfile.created_at.asc())
     )
-    db.add(profile)
+    return list(result.scalars().all())
+
+async def review_supplier_verification(db: AsyncSession, profile_id: UUID, admin_id: UUID, approve: bool, rejection_reason: Optional[str] = None) -> SupplierProfile:
+    """Admin: approves or rejects an Official-tier business verification."""
+    result = await db.execute(select(SupplierProfile).where(SupplierProfile.id == profile_id))
+    profile = result.scalars().first()
+    if not profile:
+        raise ValueError("Supplier profile not found.")
+    if profile.verification_status != "pending":
+        raise ValueError("This verification has already been reviewed.")
+
+    profile.verification_status = "approved" if approve else "rejected"
+    profile.is_verified = approve
+    profile.rejection_reason = None if approve else (rejection_reason or "Not specified")
+    profile.verified_at = datetime.now(timezone.utc)
+    profile.verified_by = admin_id
+
+    user_result = await db.execute(select(User).where(User.id == profile.user_id))
+    user = user_result.scalars().first()
+    if user and user.seller_tier == "official":
+        user.seller_verification_status = "approved" if approve else "rejected"
+
     await db.commit()
     await db.refresh(profile)
     return profile
@@ -68,9 +126,12 @@ async def get_audit_logs(db: AsyncSession) -> List[AuditLog]:
 
 async def get_supplier_dashboard(db: AsyncSession, supplier_user_id: UUID) -> SupplierDashboardMetrics:
     """Aggregates sales volume, crop listings, completed orders, and active bookings for a supplier."""
-    # 1. Sum of completed orders amount (total sales)
+    # 1. Sum of completed orders' product_amount — what the supplier actually
+    # earns. Order.total_amount also includes the platform fee (and delivery fee
+    # for courier orders), which the supplier never receives, so using it here
+    # would overstate a seller's own sales figure.
     sales_result = await db.execute(
-        select(func.sum(Order.total_amount)).where(
+        select(func.sum(Order.product_amount)).where(
             and_(Order.seller_id == supplier_user_id, Order.status == "completed")
         )
     )

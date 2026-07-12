@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { CartProvider, useCart } from './context/CartContext';
+import { WalletProvider, useWallet } from './context/WalletContext';
 import { Header } from './components/layout/Header';
 import { CategoryBar } from './components/layout/CategoryBar';
 import { Footer } from './components/layout/Footer';
@@ -11,8 +12,14 @@ import { HomePage } from './pages/HomePage';
 import { SearchPage } from './pages/SearchPage';
 import { ProductPage } from './pages/ProductPage';
 import { CartPage } from './pages/CartPage';
+import { OrdersPage } from './pages/OrdersPage';
 import { ProfilePage } from './pages/ProfilePage';
+import { KutumbPage } from './pages/KutumbPage';
 import { SellerDashboard } from './pages/SellerDashboard';
+import { AdminDashboard } from './pages/AdminDashboard';
+import { SellerPage } from './pages/SellerPage';
+import { SaleEventPage } from './pages/SaleEventPage';
+import { AdPage } from './pages/AdPage';
 import { marketAPI } from './api/client';
 
 // Google Client ID - leave empty for dev mode (login will still work with phone OTP)
@@ -28,6 +35,7 @@ interface Category {
 const AppContent: React.FC = () => {
   const { token } = useAuth();
   const { refreshCart } = useCart();
+  const { refreshBalance } = useWallet();
   const [showLogin, setShowLogin] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
 
@@ -36,8 +44,19 @@ const AppContent: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (token) refreshCart();
-  }, [token, refreshCart]);
+    if (token) {
+      refreshCart();
+      refreshBalance();
+    }
+  }, [token, refreshCart, refreshBalance]);
+
+  // Surface expired sessions instead of leaving the user stuck on cryptic
+  // "Could not validate credentials" errors from background API calls.
+  useEffect(() => {
+    const onSessionExpired = () => setShowLogin(true);
+    window.addEventListener('samuday:session-expired', onSessionExpired);
+    return () => window.removeEventListener('samuday:session-expired', onSessionExpired);
+  }, []);
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -51,12 +70,13 @@ const AppContent: React.FC = () => {
           <Route path="/product/:id" element={<ProductPage />} />
           <Route path="/cart" element={<CartPage />} />
           <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/kutumb" element={<KutumbPage />} />
           <Route path="/seller" element={<SellerDashboard />} />
-          <Route path="/orders" element={
-            <div className="page-content" style={{ paddingTop: 32 }}>
-              <div className="empty-state"><h3>Order history coming soon</h3><p>Your past orders will appear here</p></div>
-            </div>
-          } />
+          <Route path="/sellers/:sellerId" element={<SellerPage />} />
+          <Route path="/sale/:saleId" element={<SaleEventPage />} />
+          <Route path="/ad/:adId" element={<AdPage />} />
+          <Route path="/orders" element={<OrdersPage />} />
+          <Route path="/admin" element={<AdminDashboard />} />
         </Routes>
       </main>
 
@@ -72,9 +92,11 @@ const App: React.FC = () => (
   <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
     <BrowserRouter>
       <AuthProvider>
-        <CartProvider>
-          <AppContent />
-        </CartProvider>
+        <WalletProvider>
+          <CartProvider>
+            <AppContent />
+          </CartProvider>
+        </WalletProvider>
       </AuthProvider>
     </BrowserRouter>
   </GoogleOAuthProvider>

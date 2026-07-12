@@ -33,7 +33,13 @@ class UserResponse(BaseModel):
     email: Optional[str] = None
     avatar_url: Optional[str] = None
     is_seller: bool = False
+    is_admin: bool = False
+    seller_tier: Optional[str] = None
+    seller_verification_status: str = "unverified"
     profile_bio: Optional[str] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    alternate_phone: Optional[str] = None
     preferred_language: str = "en"
     status: str
     created_at: datetime
@@ -41,17 +47,31 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class KYCReviewRequest(BaseModel):
+    rejection_reason: Optional[str] = Field(None, max_length=500)
+
 class UserProfileUpdate(BaseModel):
     full_name: Optional[str] = Field(None, min_length=2, max_length=100)
     preferred_language: Optional[str] = None
     profile_bio: Optional[str] = Field(None, max_length=500)
+    gender: Optional[str] = Field(None, max_length=30)
+    date_of_birth: Optional[str] = Field(None, max_length=10)
+    alternate_phone: Optional[str] = Field(None, max_length=15)
     is_seller: Optional[bool] = None
+    seller_tier: Optional[str] = None  # "official" or "local"
 
     @field_validator("preferred_language")
     @classmethod
     def validate_lang(cls, v: Optional[str]) -> Optional[str]:
         if v is not None and v not in ["en", "hi", "gu"]:
             raise ValueError("Language must be one of: en, hi, gu")
+        return v
+
+    @field_validator("seller_tier")
+    @classmethod
+    def validate_seller_tier(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ["official", "local"]:
+            raise ValueError("seller_tier must be one of: official, local")
         return v
 
 class GoogleAuthRequest(BaseModel):
@@ -84,6 +104,9 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
 class KYCSubmission(BaseModel):
     id_type: str = Field(..., description="aadhaar, pan, voter_id")
     document_url: str = Field(..., description="Secure document URL or storage key reference")
@@ -101,10 +124,16 @@ class KYCResponse(BaseModel):
     id_type: str
     document_url: str
     verification_status: str
+    rejection_reason: Optional[str] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+class KYCDetailResponse(KYCResponse):
+    applicant_name: Optional[str] = None
+    applicant_phone: Optional[str] = None
+    applicant_context: Optional[str] = None
 
 class VouchCreate(BaseModel):
     vouched_user_id: UUID

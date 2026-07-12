@@ -112,30 +112,35 @@ async def create_user(db: AsyncSession, user_in: UserCreate) -> User:
 async def google_authenticate(db: AsyncSession, credential: str) -> User:
     """
     Verifies a Google ID token and creates or retrieves the user.
-    Uses PyJWT to decode the Google ID token (in production, verify with Google's certs).
-    For local development, we decode without full verification.
+    Whenever GOOGLE_CLIENT_ID is configured, the token's signature, issuer, and audience
+    are always cryptographically verified against Google's public certs — this is a hard
+    requirement, not a best-effort attempt, since skipping it would let anyone forge a
+    token claiming to be any email address and take over/create accounts.
+    Only when no client ID is configured at all does the server fall back to an unverified
+    decode, and only in local development, purely so the flow can be exercised offline.
     """
     import jwt as pyjwt
-    
+
     try:
-        # In production: verify with Google's public keys
-        # For development: decode without verification to extract user info
-        # The frontend @react-oauth/google library provides a valid JWT
         if settings.GOOGLE_CLIENT_ID:
-            # Try to verify properly first
+            from google.oauth2 import id_token as google_id_token
+            from google.auth.transport import requests as google_requests
             try:
-                from google.oauth2 import id_token as google_id_token
-                from google.auth.transport import requests as google_requests
                 user_info = google_id_token.verify_oauth2_token(
                     credential, google_requests.Request(), settings.GOOGLE_CLIENT_ID
                 )
-            except ImportError:
-                # google-auth not installed, decode without verification
-                user_info = pyjwt.decode(credential, options={"verify_signature": False})
-        else:
-            # No client ID configured, decode without verification (dev mode)
+            except Exception as verify_err:
+                logger.error(f"Google ID token verification failed: {verify_err}")
+                raise ValueError("Invalid Google credential: signature verification failed")
+        elif settings.ENVIRONMENT == "development":
+            logger.warning(
+                "GOOGLE_CLIENT_ID not configured; decoding Google credential WITHOUT "
+                "signature verification. This path is only permitted in development."
+            )
             user_info = pyjwt.decode(credential, options={"verify_signature": False})
-        
+        else:
+            raise ValueError("Google authentication is not configured on this server.")
+
         google_id = user_info.get("sub")
         email = user_info.get("email")
         name = user_info.get("name", "Google User")
@@ -208,9 +213,20 @@ async def update_user_profile(db: AsyncSession, user_id: UUID, updates: UserProf
         user.preferred_language = updates.preferred_language
     if updates.profile_bio is not None:
         user.profile_bio = updates.profile_bio
+    if updates.gender is not None:
+        user.gender = updates.gender
+    if updates.date_of_birth is not None:
+        user.date_of_birth = updates.date_of_birth
+    if updates.alternate_phone is not None:
+        user.alternate_phone = updates.alternate_phone
     if updates.is_seller is not None:
         user.is_seller = updates.is_seller
-    
+    if updates.seller_tier is not None and updates.seller_tier != user.seller_tier:
+        user.seller_tier = updates.seller_tier
+        user.is_seller = True
+        # Switching (or first-time choosing) a tier requires fresh verification.
+        user.seller_verification_status = "unverified"
+
     await db.commit()
     await db.refresh(user)
     
@@ -250,9 +266,14 @@ async def request_otp(phone_number: str) -> str:
     except Exception as e:
         if "Too many requests" in str(e):
             raise
-        # Fail-safe local fallback if Redis is unreachable during standalone test runs
-        logger.error(f"Redis unavailable: {e}. Falling back to default mock OTP code.")
-        return settings.MOCK_OTP_CODE
+        logger.error(f"Redis unavailable: {e}")
+        # Only fall back to the fixed mock code when mocking is explicitly enabled
+        # (local dev/tests). In production (MOCK_OTP=False) a Redis outage must
+        # fail the request, not silently accept "123456" as a login bypass for
+        # every phone number.
+        if settings.MOCK_OTP:
+            return settings.MOCK_OTP_CODE
+        raise ValueError("OTP service is temporarily unavailable. Please try again shortly.")
 
 async def verify_otp(phone_number: str, otp_code: str) -> bool:
     """Verifies the OTP code from Redis."""
@@ -267,12 +288,22 @@ async def verify_otp(phone_number: str, otp_code: str) -> bool:
             await redis_client.delete(otp_key)
             return True
         return False
-    except Exception:
-        # Fallback for Redis connection issues during tests
-        return otp_code == settings.MOCK_OTP_CODE
+    except Exception as e:
+        logger.error(f"Redis unavailable during OTP verification: {e}")
+        # Same fail-closed reasoning as request_otp: without MOCK_OTP explicitly
+        # enabled, a Redis outage must reject the login, not accept a fixed code
+        # as valid for any phone number.
+        if settings.MOCK_OTP:
+            return otp_code == settings.MOCK_OTP_CODE
+        return False
 
 async def submit_kyc(db: AsyncSession, user_id: UUID, kyc_in: KYCSubmission) -> KYCRecord:
-    """Submits a KYC document record for manual administrator review."""
+    """
+    Submits a KYC document record for manual administrator review. For a "local"
+    tier seller, this document review IS their business verification — DigiLocker
+    e-KYC would replace this later, but requires India's DigiLocker Partner
+    Program approval, which this project doesn't have yet.
+    """
     record = KYCRecord(
         user_id=user_id,
         id_type=kyc_in.id_type,
@@ -280,6 +311,12 @@ async def submit_kyc(db: AsyncSession, user_id: UUID, kyc_in: KYCSubmission) -> 
         verification_status="pending"
     )
     db.add(record)
+
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalars().first()
+    if user and user.seller_tier == "local" and user.seller_verification_status in ("unverified", "rejected"):
+        user.seller_verification_status = "pending"
+
     await db.commit()
     await db.refresh(record)
 
@@ -347,3 +384,54 @@ async def get_reputation(db: AsyncSession, user_id: UUID) -> List[ReputationScor
     """Retrieves all reputation scores (aggregate and pillar-specific) for a user."""
     result = await db.execute(select(ReputationScore).where(ReputationScore.user_id == user_id))
     return list(result.scalars().all())
+
+
+# --- Admin: KYC review (local-tier sellers AND individual identity verification, e.g. for Kutumb matrimonial) ---
+
+async def list_pending_kyc(db: AsyncSession) -> List[dict]:
+    """Lists all pending KYC submissions for admin review, regardless of why the user submitted one."""
+    result = await db.execute(
+        select(KYCRecord, User)
+        .join(User, KYCRecord.user_id == User.id)
+        .where(KYCRecord.verification_status == "pending")
+        .order_by(KYCRecord.created_at.asc())
+    )
+    rows = result.all()
+    return [
+        {
+            "id": kyc.id,
+            "user_id": kyc.user_id,
+            "id_type": kyc.id_type,
+            "document_url": kyc.document_url,
+            "verification_status": kyc.verification_status,
+            "rejection_reason": kyc.rejection_reason,
+            "created_at": kyc.created_at,
+            "applicant_name": user.full_name,
+            "applicant_phone": decrypt_pii(user.phone_number) if user.phone_number else None,
+            "applicant_context": "Local Seller Application" if user.seller_tier == "local" else "Individual Verification",
+        }
+        for kyc, user in rows
+    ]
+
+async def review_kyc(db: AsyncSession, kyc_id: UUID, admin_id: UUID, approve: bool, rejection_reason: Optional[str] = None) -> KYCRecord:
+    """Approves or rejects a KYC submission, updating the applicant's local-seller verification status."""
+    result = await db.execute(select(KYCRecord).where(KYCRecord.id == kyc_id))
+    record = result.scalars().first()
+    if not record:
+        raise ValueError("KYC record not found.")
+    if record.verification_status != "pending":
+        raise ValueError("This KYC record has already been reviewed.")
+
+    record.verification_status = "approved" if approve else "rejected"
+    record.rejection_reason = None if approve else (rejection_reason or "Not specified")
+    record.verified_at = datetime.now(timezone.utc)
+    record.verified_by = admin_id
+
+    user_result = await db.execute(select(User).where(User.id == record.user_id))
+    user = user_result.scalars().first()
+    if user and user.seller_tier == "local":
+        user.seller_verification_status = "approved" if approve else "rejected"
+
+    await db.commit()
+    await db.refresh(record)
+    return record

@@ -1,6 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Star } from 'lucide-react';
+import { FALLBACK_IMAGE } from '../../utils/placeholder';
 
 interface ProductCardProps {
   id: string;
@@ -23,10 +24,10 @@ export const ProductCard: React.FC<ProductCardProps> = ({
     <div className="product-card" onClick={() => navigate(`/product/${id}`)}>
       <img
         className="product-card-image"
-        src={imageUrl || 'https://via.placeholder.com/300x300?text=Product'}
+        src={imageUrl || FALLBACK_IMAGE}
         alt={title}
         loading="lazy"
-        onError={e => { (e.target as HTMLImageElement).src = 'https://via.placeholder.com/300x300?text=Product'; }}
+        onError={e => { (e.target as HTMLImageElement).src = FALLBACK_IMAGE; }}
       />
       <div className="product-card-body">
         <div className="product-card-title">{title}</div>

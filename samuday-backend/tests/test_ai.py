@@ -1,5 +1,6 @@
 import pytest
 from app.ai.service import clean_thinking_blocks
+from app.core.config import settings
 
 def test_clean_thinking_blocks_xml():
     # 1. Test XML thought tag removal
@@ -56,4 +57,4 @@ async def test_upload_image_endpoint(client: AsyncClient):
     response = await client.post("/api/v1/marketplace/upload", files=files, headers=headers)
     assert response.status_code == 200
     assert "url" in response.json()
-    assert "/static/uploads/" in response.json()["url"]
+    assert response.json()["url"].startswith(f"{settings.SUPABASE_URL}/storage/v1/object/public/")

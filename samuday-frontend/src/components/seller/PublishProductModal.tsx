@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { marketAPI, aiAPI } from '../../api/client';
-import { Sparkles, Mic, Image as ImageIcon, CheckCircle, AlertCircle, X, Wand2 } from 'lucide-react';
+import { Sparkles, Mic, Image as ImageIcon, CheckCircle, AlertCircle, X, Wand2, Package, Plus, Trash2 } from 'lucide-react';
 
 interface Props {
   isOpen: boolean;
@@ -25,7 +25,11 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
   const [imageVariants, setImageVariants] = useState<string[]>([]);
   const [imageGenerating, setImageGenerating] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
-  
+  const [weightGrams, setWeightGrams] = useState('500');
+  const [offers, setOffers] = useState<string[]>([]);
+  const [newOffer, setNewOffer] = useState('');
+  const [returnPolicy, setReturnPolicy] = useState('');
+
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [aiNotice, setAiNotice] = useState('');
@@ -144,7 +148,11 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
         setCategoryId(categories[0].id);
       }
 
-      setAiNotice('✨ AI generated full SEO title, category, price advice & deep description!');
+      if (result.weight_grams && result.weight_grams > 0) {
+        setWeightGrams(result.weight_grams.toString());
+      }
+
+      setAiNotice('✨ AI generated full SEO title, category, price, shipping weight & deep description!');
     } catch (e: any) {
       setError(e.message || 'AI generation failed');
     }
@@ -204,7 +212,10 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
         listing_type: 'sale',
         quantity: parseInt(quantity) || 50,
         unit: 'piece',
-        media_urls: mediaUrls
+        media_urls: mediaUrls,
+        weight_grams: parseInt(weightGrams) || 500,
+        available_offers: offers,
+        return_policy: returnPolicy || undefined,
       });
 
       onSuccess();
@@ -316,8 +327,52 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
           </div>
 
           <div className="form-group">
+            <label style={{ fontWeight: 600, fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Package size={14} /> Shipping Weight (grams, per unit)
+            </label>
+            <input type="number" value={weightGrams} onChange={e => setWeightGrams(e.target.value)} min="10" placeholder="500" />
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Used to calculate courier delivery charges. AI Auto-Fill estimates this for you.</span>
+          </div>
+
+          <div className="form-group">
             <label style={{ fontWeight: 600, fontSize: '0.85rem' }}>Detailed Description & Features</label>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={4} placeholder="Full product details..." />
+            <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setDescription(prev => (prev ? prev + '\n' : '') + '### Heading\n')}>Heading</button>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setDescription(prev => prev + '**bold text**')}>Bold</button>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setDescription(prev => (prev ? prev + '\n' : '') + '- ')}>Bullet</button>
+            </div>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={4} placeholder="Full product details... supports ### headings, **bold**, and - bullets" />
+          </div>
+
+          <div className="form-group">
+            <label style={{ fontWeight: 600, fontSize: '0.85rem' }}>Available Offers</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+              {offers.map((o, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg-body)', padding: '6px 10px', borderRadius: 6 }}>
+                  <span style={{ flex: 1, fontSize: '0.85rem' }}>{o}</span>
+                  <button type="button" onClick={() => setOffers(prev => prev.filter((_, idx) => idx !== i))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)' }}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={newOffer}
+                onChange={e => setNewOffer(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (newOffer.trim()) { setOffers(prev => [...prev, newOffer.trim()]); setNewOffer(''); } } }}
+                placeholder="e.g. Bank Offer: 10% off on SBI Credit Cards"
+                style={{ flex: 1 }}
+              />
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => { if (newOffer.trim()) { setOffers(prev => [...prev, newOffer.trim()]); setNewOffer(''); } }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Plus size={14} /> Add
+              </button>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label style={{ fontWeight: 600, fontSize: '0.85rem' }}>Return Policy</label>
+            <textarea value={returnPolicy} onChange={e => setReturnPolicy(e.target.value)} rows={2} placeholder="e.g. 7-day easy returns if item is unused and in original packaging." />
           </div>
 
           {/* Section 2: Manual Upload + AI Multi-Image Generator */}

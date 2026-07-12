@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
+from uuid import UUID
 
 from app.ai import service as ai_service
 from app.marketplace import service as market_service
@@ -35,6 +36,11 @@ class CustomerCopilotRequest(BaseModel):
     query: str
     language: Optional[str] = "en"
 
+class GenerateAdRequest(BaseModel):
+    listing_id: UUID
+
+
+MAX_AUDIO_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 @router.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
@@ -43,14 +49,18 @@ async def transcribe_audio(file: UploadFile = File(...)):
     """
     try:
         file_bytes = await file.read()
+        if len(file_bytes) > MAX_AUDIO_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail="Audio file too large (max 10MB).")
         transcription = await ai_service.transcribe_audio_groq(file_bytes, file.filename or "recording.webm")
         return {"text": transcription}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/generate-images")
-async def generate_images(req: GenerateImagesRequest):
+async def generate_images(req: GenerateImagesRequest, current_user = Depends(get_current_user)):
     """
     Generates 3 additional high-resolution AI variant showcase photos from 1 primary image.
     """
@@ -63,13 +73,13 @@ async def generate_images(req: GenerateImagesRequest):
 
 
 @router.post("/generate-listing")
-async def generate_listing(req: GenerateListingRequest):
+async def generate_listing(req: GenerateListingRequest, current_user = Depends(get_current_user)):
     """
     Converts short voice audio or text input (EN, HI, GU) into a full SEO-optimized listing object.
     """
     if not req.short_summary.strip():
         raise HTTPException(status_code=400, detail="Please provide a summary or speak about your product.")
-    
+
     listing_data = await ai_service.generate_full_seo_listing(
         short_summary=req.short_summary,
         audio_url=req.audio_url,
@@ -81,33 +91,49 @@ async def generate_listing(req: GenerateListingRequest):
 @router.post("/seller-agent")
 async def seller_agent(req: SellerAgentRequest, current_user = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """
-    Interactive AI Seller Diagnostic Agent. Performs diagnostics and runs action tools.
+    Interactive AI Seller Diagnostic Agent. Performs diagnostics and runs action tools,
+    grounded in the seller's real listings, orders/engagement, and buyer reviews —
+    not just listing titles/prices.
     """
-    all_listings = await market_service.get_all_listings(db)
+    seller_listings = await market_service.get_my_listings(db, current_user.id)
     my_listings = [
-        {"id": l.id, "title": l.title, "price": l.price, "quantity": l.quantity}
-        for l in all_listings if l.seller_id == current_user.id
+        {"id": l.id, "title": l.title, "price": l.price, "quantity": l.quantity, "status": l.status}
+        for l in seller_listings
     ]
-        
-    result = await ai_service.run_seller_agent(req.prompt, my_listings)
+    reviews = await market_service.get_seller_reviews(db, current_user.id)
+    review_analytics = await ai_service.get_review_analytics(reviews)
+    orders = await market_service.get_orders_for_user(db, current_user.id, role="seller")
+
+    result = await ai_service.run_seller_agent(req.prompt, my_listings, reviews, review_analytics, orders)
     return result
 
 
 @router.get("/seller-insights")
 async def get_seller_insights(current_user = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """
-    Returns real-time AI Insights & live notifications feed for the seller.
+    Returns real-time AI Insights & live notifications feed for the seller, computed from
+    their real listings, orders, sale events, and reviews.
     """
-    all_listings = await market_service.get_all_listings(db)
-    my_listings = [l for l in all_listings if l.seller_id == current_user.id]
-    my_sales = await promo_service.get_seller_sale_events(db, current_user.id)
-        
-    insights = await ai_service.get_seller_ai_insights(my_listings, my_sales)
+    seller_listings = await market_service.get_my_listings(db, current_user.id)
+    my_listings = [
+        {"id": l.id, "title": l.title, "price": l.price, "quantity": l.quantity, "status": l.status}
+        for l in seller_listings
+    ]
+    my_sales_orm = await promo_service.get_seller_sale_events(db, current_user.id)
+    my_sales = [
+        {"id": str(s.id), "title": s.title, "status": s.status, "end_date": s.end_date.isoformat()}
+        for s in my_sales_orm
+    ]
+    orders = await market_service.get_orders_for_user(db, current_user.id, role="seller")
+    reviews = await market_service.get_seller_reviews(db, current_user.id)
+    review_analytics = await ai_service.get_review_analytics(reviews)
+
+    insights = await ai_service.get_seller_ai_insights(my_listings, my_sales, orders, review_analytics)
     return insights
 
 
 @router.post("/reviews/auto-reply")
-async def auto_reply_review(req: AutoReplyReviewRequest):
+async def auto_reply_review(req: AutoReplyReviewRequest, current_user = Depends(get_current_user)):
     """
     Generates a polite, context-aware AI response to a buyer review.
     """
@@ -121,12 +147,41 @@ async def auto_reply_review(req: AutoReplyReviewRequest):
 
 
 @router.get("/reviews/analytics")
-async def get_review_analytics():
+async def get_review_analytics(current_user = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """
-    Returns review sentiment score distribution, top praises, and product flaw summaries.
+    Returns review sentiment score distribution, top praises, and product flaw summaries,
+    computed from the current seller's real buyer reviews.
     """
-    analytics = await ai_service.get_review_analytics([])
+    reviews = await market_service.get_seller_reviews(db, current_user.id)
+    analytics = await ai_service.get_review_analytics(reviews)
     return analytics
+
+
+@router.post("/generate-ad")
+async def generate_ad_endpoint(
+    req: GenerateAdRequest,
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generates a complete ad creative (headline + AI banner image) for one of the
+    seller's own listings, so sellers only pick a listing rather than write copy
+    or source an image themselves.
+    """
+    listing = await market_service.get_listing_by_id(db, req.listing_id)
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    if listing.seller_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only advertise your own listings.")
+
+    primary_image = listing.media[0].media_url if listing.media else None
+    creative = await ai_service.generate_ad_creative(listing.title, listing.description, primary_image)
+    return {
+        "listing_id": str(listing.id),
+        "listing_title": listing.title,
+        "headline": creative["headline"],
+        "image_url": creative["image_url"],
+    }
 
 
 @router.post("/copilot/chat")

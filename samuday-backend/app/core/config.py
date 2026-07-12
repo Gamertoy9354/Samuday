@@ -24,9 +24,19 @@ class Settings(BaseSettings):
     
     # PII Encryption Config (Fernet URL-safe base64 key)
     PII_ENCRYPTION_KEY: str
+
+    # Supabase Storage — used for all uploaded/AI-generated images instead of local
+    # disk, since Render's free/ephemeral instances lose local files on restart.
+    # SUPABASE_SERVICE_ROLE_KEY is a secret admin key: never expose it to the frontend.
+    SUPABASE_URL: str
+    SUPABASE_SERVICE_ROLE_KEY: str
+
+    # Payment gateway webhook signing secret (HMAC-SHA256) used to verify callback authenticity
+    PAYMENT_WEBHOOK_SECRET: str = "dev-payment-webhook-secret-change-in-production"
     
-    # OTP Mocking Config
-    MOCK_OTP: bool = True
+    # OTP Mocking Config — defaults to False (secure) so a forgotten env var in
+    # production fails closed rather than silently accepting a fixed bypass code.
+    MOCK_OTP: bool = False
     MOCK_OTP_CODE: str = "123456"
     
     # S3 Object Storage Config
@@ -43,6 +53,11 @@ class Settings(BaseSettings):
     # Frontend URL (for CORS and redirects)
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # Backend's own public URL — used to build links back to itself (e.g. uploaded
+    # image URLs). Deliberately separate from FRONTEND_URL: on a real deployment
+    # the two are different hosts entirely, not just different ports.
+    BACKEND_URL: str = "http://localhost:8000"
+
     # NVIDIA AI Config
     NVIDIA_API_KEY: str = os.environ.get("NVIDIA_API_KEY")
     NVIDIA_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
@@ -53,6 +68,26 @@ class Settings(BaseSettings):
 
     # Gemini AI Config
     GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY")
+
+    # Cloudflare Workers AI — free image-generation/editing fallback used only when
+    # Gemini image editing is unavailable (see app/ai/service.py::_edit_image_with_fallback)
+    CLOUDFLARE_ACCOUNT_ID: str = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+    CLOUDFLARE_API_TOKEN: str = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+
+    # Delhivery shipping (optional — empty means no account connected yet; the
+    # shipping module falls back to clearly-labeled simulated rates/tracking)
+    DELHIVERY_API_KEY: str = ""
+
+    # Google Maps (optional — geocoding defaults to free OpenStreetMap Nominatim
+    # when unset; add this + billing later for Google's more polished autocomplete)
+    GOOGLE_MAPS_API_KEY: str = ""
+
+    # Platform fee taken on each order, absorbed gateway-cut-included (see
+    # app/marketplace/fees.py for the split). 0.05 = 5%.
+    PLATFORM_FEE_RATE: float = 0.05
+    # Informational only (no real gateway connected yet) — used to estimate the
+    # net platform margin after gateway processing costs.
+    ESTIMATED_GATEWAY_FEE_RATE: float = 0.02
 
     model_config = SettingsConfigDict(
         env_file=".env",

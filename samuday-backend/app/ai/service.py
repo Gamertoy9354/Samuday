@@ -2,6 +2,7 @@ import logging
 import random
 import re
 import asyncio
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -195,48 +196,27 @@ async def transcribe_audio_groq(file_bytes: bytes, filename: str) -> str:
 
 async def generate_local_pil_variants(primary_image_url: str) -> List[str]:
     """
-    Generates 3 distinct, high-quality local visual variations of the uploaded primary image
-    using Pillow. Each variant simulates a professional photography angle/style:
+    Generates 3 distinct, high-quality visual variations of the uploaded primary image
+    using Pillow, uploading each to Supabase Storage. Each variant simulates a
+    professional photography angle/style:
       1. Top-Down Studio View — rotated perspective with clean white padding
       2. Side-Angle Dramatic — perspective warp with high contrast dark background
       3. Warm Golden Hour Lifestyle — saturated warm tones with soft vignette
     """
-    import os
+    import io
     import uuid
-    import httpx
     from PIL import Image, ImageEnhance, ImageFilter, ImageDraw
-    
+    from app.core.storage import upload_bytes
+
     generated_urls = []
-    host_url = settings.FRONTEND_URL.replace("5173", "8000")
-    
-    # 1. Resolve the local path of the primary image
-    filename = None
-    if "/static/uploads/" in primary_image_url:
-        filename = primary_image_url.split("/static/uploads/")[-1]
-        
-    local_path = None
-    if filename:
-        candidate_path = os.path.join("static/uploads", filename)
-        if os.path.exists(candidate_path):
-            local_path = candidate_path
-            
-    if not local_path:
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(primary_image_url, timeout=10.0)
-                if resp.status_code == 200:
-                    temp_filename = f"temp_dl_{uuid.uuid4().hex}.jpg"
-                    local_path = os.path.join("static/uploads", temp_filename)
-                    with open(local_path, "wb") as f:
-                        f.write(resp.content)
-        except Exception as e:
-            logger.error(f"Failed to download primary image for PIL variants: {e}")
-            
-    if not local_path or not os.path.exists(local_path):
+
+    source = await _load_image_bytes(primary_image_url)
+    if not source:
         return []
-        
+    source_bytes, _ = source
+
     try:
-        with Image.open(local_path) as img:
+        with Image.open(io.BytesIO(source_bytes)) as img:
             img = img.convert("RGBA")
             w, h = img.size
             canvas_size = max(w, h)
@@ -253,9 +233,9 @@ async def generate_local_pil_variants(primary_image_url: str) -> List[str]:
             bg1 = enhancer.enhance(1.05)
             bg1 = bg1.resize((canvas_size, canvas_size), Image.Resampling.LANCZOS)
             v1_filename = f"var_topdown_{uuid.uuid4().hex}.jpg"
-            v1_path = os.path.join("static/uploads", v1_filename)
-            bg1.save(v1_path, "JPEG", quality=92)
-            generated_urls.append(f"{host_url}/static/uploads/{v1_filename}")
+            buf1 = io.BytesIO()
+            bg1.save(buf1, "JPEG", quality=92)
+            generated_urls.append(await upload_bytes(buf1.getvalue(), v1_filename, "image/jpeg"))
             
             # --- Variant 2: Close-Up Detail Shot (Center Crop + Sharpen + High Contrast) ---
             crop_margin = 0.25
@@ -273,9 +253,9 @@ async def generate_local_pil_variants(primary_image_url: str) -> List[str]:
             enhancer_s = ImageEnhance.Color(detail_rgb)
             detail_rgb = enhancer_s.enhance(1.15)
             v2_filename = f"var_detail_{uuid.uuid4().hex}.jpg"
-            v2_path = os.path.join("static/uploads", v2_filename)
-            detail_rgb.save(v2_path, "JPEG", quality=92)
-            generated_urls.append(f"{host_url}/static/uploads/{v2_filename}")
+            buf2 = io.BytesIO()
+            detail_rgb.save(buf2, "JPEG", quality=92)
+            generated_urls.append(await upload_bytes(buf2.getvalue(), v2_filename, "image/jpeg"))
             
             # --- Variant 3: Warm Lifestyle Shot (Golden Tones + Soft Vignette) ---
             lifestyle = img.convert("RGB").resize((canvas_size, canvas_size), Image.Resampling.LANCZOS)
@@ -309,73 +289,194 @@ async def generate_local_pil_variants(primary_image_url: str) -> List[str]:
                 alpha=0.92
             )
             v3_filename = f"var_lifestyle_{uuid.uuid4().hex}.jpg"
-            v3_path = os.path.join("static/uploads", v3_filename)
-            lifestyle.save(v3_path, "JPEG", quality=92)
-            generated_urls.append(f"{host_url}/static/uploads/{v3_filename}")
+            buf3 = io.BytesIO()
+            lifestyle.save(buf3, "JPEG", quality=92)
+            generated_urls.append(await upload_bytes(buf3.getvalue(), v3_filename, "image/jpeg"))
             
     except Exception as e:
         logger.error(f"Error during PIL local variant generation: {e}")
         
     return generated_urls
 
+GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"  # "Nano Banana" — free-tier image generation/editing
+
+
+async def _load_image_bytes(image_url: str) -> Optional[tuple]:
+    """Fetches a primary_image_url (a Supabase Storage public URL) to (bytes, mime_type)."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(image_url, timeout=10.0)
+            if resp.status_code == 200:
+                mime_type = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+                return resp.content, mime_type
+    except Exception as e:
+        logger.error(f"Failed to fetch primary image for AI editing: {e}")
+    return None
+
+
+async def _gemini_edit_image(source_bytes: bytes, source_mime: str, prompt: str) -> Optional[bytes]:
+    """Sends one image + edit instruction to Gemini 2.5 Flash Image, returns the edited image bytes or None."""
+    api_key = settings.GEMINI_API_KEY
+    if not api_key:
+        return None
+    source_b64 = base64.b64encode(source_bytes).decode("utf-8")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_IMAGE_MODEL}:generateContent"
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inlineData": {"mimeType": source_mime, "data": source_b64}}
+            ]
+        }],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+            if response.status_code == 200:
+                res_data = response.json()
+                parts = res_data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                image_part = next((p for p in parts if "inlineData" in p), None)
+                if image_part:
+                    return base64.b64decode(image_part["inlineData"]["data"])
+            logger.warning(f"Gemini Nano Banana image edit failed with code {response.status_code}: {response.text[:300]}")
+    except Exception as e:
+        logger.error(f"Error during Gemini Nano Banana image edit: {e}")
+    return None
+
+
+async def _cloudflare_edit_image(source_bytes: bytes, source_mime: str, prompt: str) -> Optional[bytes]:
+    """
+    Free image-to-image fallback via Cloudflare Workers AI's flux-2-klein-4b model, which
+    unifies generation and editing in one model. Takes the source image bytes directly
+    (multipart upload — no public URL needed). Free tier: 10,000 Neurons/day, no card required.
+    """
+    account_id = settings.CLOUDFLARE_ACCOUNT_ID
+    api_token = settings.CLOUDFLARE_API_TOKEN
+    if not account_id or not api_token:
+        return None
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/black-forest-labs/flux-2-klein-4b"
+    headers = {"Authorization": f"Bearer {api_token}"}
+    files = {"input_image_0": ("source.jpg", source_bytes, source_mime or "image/jpeg")}
+    data = {"prompt": prompt}
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, files=files, data=data, timeout=60.0)
+            if response.status_code == 200:
+                res_data = response.json()
+                img_b64 = res_data.get("result", {}).get("image")
+                if img_b64:
+                    return base64.b64decode(img_b64)
+            logger.warning(f"Cloudflare Workers AI image edit failed with code {response.status_code}: {response.text[:300]}")
+    except Exception as e:
+        logger.error(f"Error during Cloudflare Workers AI image edit: {e}")
+    return None
+
+
+async def _edit_image_with_fallback(source_bytes: bytes, source_mime: str, prompt: str) -> Optional[bytes]:
+    """
+    Edits an image via Gemini Nano Banana first (primary — generally higher quality, no
+    rate-limit surprises). If that's unavailable (no API key, quota exhausted, transient
+    failure), falls back to Cloudflare Workers AI so the feature still returns an image
+    instead of erroring out.
+    """
+    edited = await _gemini_edit_image(source_bytes, source_mime, prompt)
+    if edited:
+        return edited
+    logger.info("Gemini image edit unavailable — falling back to Cloudflare Workers AI")
+    return await _cloudflare_edit_image(source_bytes, source_mime, prompt)
+
+
+async def generate_ad_creative(listing_title: str, listing_description: str, primary_image_url: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Generates a complete ad creative for a seller's "Advertise" tab: a punchy headline
+    (via NVIDIA LLM) and an eye-catching promotional banner image derived from the
+    listing's own photo (via Gemini Nano Banana image editing, falling back to the
+    original photo untouched if image editing isn't available).
+    """
+    system_prompt = (
+        "You are an expert e-commerce advertisement copywriter for the Indian market. "
+        "Given a product's title and description, write ONE punchy advertisement headline "
+        "suitable for a homepage banner (under 60 characters). "
+        "Respond with ONLY the headline text itself — no quotes, no explanation, no markdown, "
+        "no restating these instructions.\n\n"
+        "Example:\n"
+        "Product: boAt Airdopes 141 TWS Bluetooth Earbuds - Black\n"
+        "Headline: Big Bass, Bigger Savings — boAt Airdopes 141\n\n"
+        "Example:\n"
+        "Product: Premium Organic Basmati Rice 25kg - Grade A Punjab Origin\n"
+        "Headline: Farm-Fresh Basmati Rice, Delivered to Your Door"
+    )
+    user_prompt = f"Product: {listing_title}\nDescription: {(listing_description or '')[:400]}\nHeadline:"
+    raw_headline = await call_nvidia_llm(user_prompt, system_prompt, temperature=0.7, max_tokens=40)
+    headline = (raw_headline or "").strip().strip('"').strip("*").split("\n")[0].strip()
+    # Small/instruction-following-weak models sometimes echo the prompt instead of
+    # producing a headline — detect that failure mode and fall back to the title.
+    if not headline or len(headline) > 90 or re.search(r'\b(the user|you are|respond with|instructions?)\b', headline, re.IGNORECASE):
+        headline = listing_title
+    headline = headline[:80]
+
+    ad_image_url = primary_image_url
+    if primary_image_url:
+        source = await _load_image_bytes(primary_image_url)
+        if source:
+            source_bytes, source_mime = source
+            prompt = (
+                f"Edit this product photo of '{listing_title}' into an eye-catching e-commerce "
+                f"advertisement banner: wide promotional composition, bold vivid colors, professional "
+                f"marketing look, with clean negative space on one side reserved for text overlay. "
+                f"Keep the product itself recognizable and unchanged."
+            )
+            edited_bytes = await _edit_image_with_fallback(source_bytes, source_mime, prompt)
+            if edited_bytes:
+                import uuid
+                from app.core.storage import upload_bytes
+                try:
+                    ad_image_url = await upload_bytes(edited_bytes, f"ad_{uuid.uuid4().hex}.jpg", "image/jpeg")
+                except Exception as e:
+                    logger.error(f"Failed to upload AI ad creative image: {e}")
+
+    return {"headline": headline, "image_url": ad_image_url}
+
+
 async def generate_ai_variant_images(primary_image_url: str, title: str, category: str = "general") -> List[str]:
     """
     Generates 3 additional high-quality AI variant product showcase photos from the primary image.
-    Uses Google AI Studio Imagen 4.0 if available; falls back to generating variations of the uploaded image locally.
+    Uses Gemini 2.5 Flash Image ("Nano Banana") to edit the seller's actual uploaded photo into
+    professional showcase variants — it's available on the Gemini API free tier (500 req/day),
+    unlike the Imagen predict endpoint, which requires a paid plan. Falls back to Cloudflare
+    Workers AI per-image if Gemini is unavailable, then to local Pillow-based variants, then
+    themed stock photos, if neither AI provider comes through.
     """
-    import os
     import uuid
+    from app.core.storage import upload_bytes
     logger.info(f"Generating AI variant images for '{title}' (Category: {category})")
-    
+
     prompts = [
-        f"Professional e-commerce studio shot of '{title}', clean white background, high resolution, product photo.",
-        f"Vibrant lifestyle shot of '{title}' being used in context, high resolution, warm ambient lighting.",
-        f"Detailed macro close-up of '{title}' highlighting the premium material and build quality."
+        f"Edit this product photo of '{title}' into a professional e-commerce studio shot: clean pure-white background, "
+        f"soft even studio lighting, sharp focus, centered composition. Keep the product itself unchanged.",
+        f"Edit this product photo of '{title}' into a vibrant lifestyle shot: place it in a realistic, warmly-lit "
+        f"in-use context that suits the product, high resolution. Keep the product itself recognizable and unchanged.",
+        f"Edit this product photo of '{title}' into a detailed macro close-up that highlights its material and build "
+        f"quality, shallow depth of field, premium editorial look. Keep the product itself unchanged."
     ]
 
-    api_key = settings.GEMINI_API_KEY
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={api_key}"
-
     generated_urls = []
-    os.makedirs("static/uploads", exist_ok=True)
+    source = await _load_image_bytes(primary_image_url)
 
-    if api_key:
-        async with httpx.AsyncClient() as client:
-            for idx, prompt in enumerate(prompts):
-                payload = {
-                    "instances": [
-                        {
-                            "prompt": prompt
-                        }
-                    ],
-                    "parameters": {
-                        "sampleCount": 1,
-                        "aspectRatio": "1:1",
-                        "outputMimeType": "image/jpeg"
-                    }
-                }
+    if source:
+        source_bytes, source_mime = source
+        for prompt in prompts:
+            edited_bytes = await _edit_image_with_fallback(source_bytes, source_mime, prompt)
+            if edited_bytes:
+                filename = f"gen_{uuid.uuid4().hex}.jpg"
                 try:
-                    response = await client.post(url, json=payload, timeout=20.0)
-                    if response.status_code == 200:
-                        res_data = response.json()
-                        predictions = res_data.get("predictions", [])
-                        if predictions and "bytesBase64Encoded" in predictions[0]:
-                            b64_data = predictions[0]["bytesBase64Encoded"]
-                            img_bytes = base64.b64decode(b64_data)
-                            
-                            # Save image to static folder
-                            filename = f"gen_{uuid.uuid4().hex}.jpg"
-                            filepath = os.path.join("static/uploads", filename)
-                            with open(filepath, "wb") as f:
-                                f.write(img_bytes)
-                            
-                            generated_urls.append(f"{settings.FRONTEND_URL.replace('5173', '8000')}/static/uploads/{filename}")
-                            continue
-                    logger.warning(f"Google AI Studio Imagen 4.0 call failed with code {response.status_code}: {response.text}")
+                    generated_urls.append(await upload_bytes(edited_bytes, filename, "image/jpeg"))
                 except Exception as e:
-                    logger.error(f"Error during Google AI Studio image generation: {e}")
+                    logger.error(f"Failed to upload AI variant image to storage: {e}")
 
-    # Fallback to local image variations if Gemini fails / is restricted
+    # Fallback to local image variations if neither AI provider comes through
     if len(generated_urls) < 3:
         logger.info("Falling back to generating local visual variations of the primary image...")
         try:
@@ -494,6 +595,8 @@ RULES:
    DO NOT confuse model numbers (S24, 1080, M3, 270), screen sizes (6.7, 15.6), memory/storage (128GB, 256GB, 512GB), quantities (1x, 2pcs, 50kg), or refresh rates (120Hz, 144Hz) with the price.
    If no price is mentioned, estimate a fair Indian market price for the product.
 
+5. WEIGHT: Estimate the shipping weight of ONE unit of the product in grams (integer), including reasonable packaging. Use real-world knowledge (e.g. earbuds ~150g, a ceiling fan ~2500g, a 25kg rice bag ~25500g, a smartphone ~250g). This is used for courier rate calculation, so it matters — never omit it.
+
 EXAMPLES:
 
 Input: "boat airdopes 141 earbuds bluetooth TWS price 1299"
@@ -502,7 +605,8 @@ Output:
   "title": "boAt Airdopes 141 TWS Bluetooth Earbuds - Black",
   "description": "### boAt Airdopes 141 TWS Bluetooth Earbuds\\n\\n**Product Overview**\\nExperience true wireless freedom with the boAt Airdopes 141. These lightweight TWS earbuds deliver immersive audio with powerful bass, crystal-clear calls, and an ergonomic in-ear design perfect for daily commutes and workouts.\\n\\n**Key Features**\\n- 🎵 8mm Drivers with boAt Signature Sound\\n- 🔋 Up to 42 hours total playback with charging case\\n- 📱 Bluetooth v5.1 with instant pairing and low latency\\n- 💧 IPX4 water and sweat resistance\\n- 🎤 Built-in microphone with ENx noise cancellation\\n\\n**What's in the Box**\\n- 1x boAt Airdopes 141 (L+R earbuds)\\n- 1x Charging case\\n- 1x USB-C charging cable\\n- 3x Ear tip sizes (S/M/L)\\n\\n**Warranty & Support**\\n- 1 Year Manufacturer Warranty\\n- Dedicated boAt customer support",
   "category": "Electronics",
-  "price_inr": 1299
+  "price_inr": 1299,
+  "weight_grams": 150
 }
 
 Input: "i want to sell organic basmati rice 25kg bag for 1800 rupees premium quality from Punjab"
@@ -511,7 +615,8 @@ Output:
   "title": "Premium Organic Basmati Rice 25kg - Grade A Punjab Origin",
   "description": "### Premium Organic Basmati Rice — 25kg Pack\\n\\n**Product Overview**\\nSourced directly from the fertile lands of Punjab, this premium organic basmati rice is 100% natural and free from pesticides. Each grain is extra-long, aromatic, and cooks into fluffy, separated grains perfect for biryani, pulao, and everyday meals.\\n\\n**Key Features**\\n- 🌾 100% Certified Organic — No pesticides or chemicals\\n- 📏 Extra-long grain basmati (8mm+ after cooking)\\n- 🏆 Grade A quality with strict quality control\\n- 🚛 Farm-fresh, directly sourced from Punjab farmers\\n- 📦 Airtight 25kg packaging for long shelf life\\n\\n**What's in the Box**\\n- 1x 25kg bag of Premium Organic Basmati Rice\\n- Quality certification card\\n\\n**Warranty & Support**\\n- 30-day freshness guarantee\\n- Easy returns if quality does not meet expectations",
   "category": "Agriculture",
-  "price_inr": 1800
+  "price_inr": 1800,
+  "weight_grams": 25500
 }
 
 RESPOND WITH ONLY THE JSON OBJECT. No explanation, no markdown code fence, no extra text."""
@@ -547,6 +652,7 @@ RESPOND WITH ONLY THE JSON OBJECT. No explanation, no markdown code fence, no ex
         seo_title = "Premium Quality Product"
     estimated_price_paise = 149900
     deep_description = ""
+    weight_grams = 500
 
     if parsed_json:
         # ── Title ──
@@ -581,6 +687,13 @@ RESPOND WITH ONLY THE JSON OBJECT. No explanation, no markdown code fence, no ex
                 price_num = re.search(r'[\d]+', raw)
                 if price_num:
                     estimated_price_paise = max(int(price_num.group(0)) * 100, 9900)
+            except Exception:
+                pass
+
+        # ── Weight (for Delhivery shipping rate calculation) ──
+        if parsed_json.get("weight_grams") is not None:
+            try:
+                weight_grams = max(int(float(parsed_json["weight_grams"])), 10)
             except Exception:
                 pass
     else:
@@ -670,6 +783,7 @@ RESPOND WITH ONLY THE JSON OBJECT. No explanation, no markdown code fence, no ex
         "price_paise": estimated_price_paise,
         "unit": "piece",
         "quantity": 100,
+        "weight_grams": weight_grams,
         "seo_tags": seo_tags,
         "specifications": specs,
         "target_audience": "General Consumers, Local Businesses & Farmers",
@@ -677,112 +791,285 @@ RESPOND WITH ONLY THE JSON OBJECT. No explanation, no markdown code fence, no ex
     }
 
 
-async def run_seller_agent(prompt: str, seller_listings: List[Dict[str, Any]]) -> Dict[str, Any]:
+LOW_STOCK_THRESHOLD = 20
+
+async def run_seller_agent(
+    prompt: str,
+    seller_listings: List[Dict[str, Any]],
+    reviews: List[Dict[str, Any]],
+    review_analytics: Dict[str, Any],
+    orders: List[Dict[str, Any]],
+) -> Dict[str, Any]:
     """
-    Interactive AI Seller Diagnostic Agent powered by NVIDIA AI LLM.
+    Interactive AI Seller Diagnostic Agent powered by NVIDIA AI LLM. Every "tool" below
+    is computed from the seller's real listings/orders/reviews (passed in by the caller),
+    not invented — this replaces an earlier version that returned hardcoded canned stats
+    (e.g. "boost sales by 35%") regardless of what the seller actually asked or owned.
     """
-    logger.info(f"AI Seller Agent query: '{prompt}' on {len(seller_listings)} listings")
+    logger.info(f"AI Seller Agent query: '{prompt}' on {len(seller_listings)} listings, {len(orders)} orders, {len(reviews)} reviews")
     lower = prompt.lower()
 
-    # Diagnostic tool executions
+    completed_orders = [o for o in orders if o.get("status") == "completed"]
+    cancelled_orders = [o for o in orders if o.get("status") == "cancelled"]
+    total_orders = len(orders)
+    completion_rate = round(len(completed_orders) / total_orders * 100) if total_orders else 0
+    total_revenue_paise = sum(o.get("product_amount", 0) for o in completed_orders)
+
+    low_stock_items = [l for l in seller_listings if l.get("status") == "active" and (l.get("quantity") or 0) < LOW_STOCK_THRESHOLD]
+
+    # Diagnostic tool executions — each grounded in real computed data
     executed_tools = []
     response_text = ""
 
-    if any(k in lower for k in ["price", "discount", "cost", "competitor", "ભાવ", "કિંમત", "દામ", "કીમત"]):
+    if any(k in lower for k in ["review", "rating", "feedback", "customer opinion", "સમીક્ષા", "રેટિંગ"]):
+        ra = review_analytics
+        if ra["total_reviews"] == 0:
+            executed_tools.append({"tool": "analyze_reviews", "status": "info", "output": "No buyer reviews yet."})
+            response_text = "📝 **AI Review Analysis Tool**: You don't have any buyer reviews yet. Once buyers rate their completed orders, I'll be able to analyze sentiment trends and flag recurring product issues here."
+        else:
+            executed_tools.append({
+                "tool": "analyze_reviews",
+                "status": "success",
+                "output": f"Analyzed {ra['total_reviews']} real review(s): {ra['average_rating']}/5 avg, {ra['sentiment_breakdown']['positive_percent']}% positive."
+            })
+            flaw_note = f" Flagged concerns from buyer comments: {'; '.join(ra['flaw_reports'])}." if ra["flaw_reports"] else " No recurring complaints detected in buyer comments."
+            response_text = (
+                f"📝 **AI Review Analysis Tool**: Based on your **{ra['total_reviews']} real buyer review(s)**, "
+                f"your average rating is **{ra['average_rating']}/5** "
+                f"({ra['sentiment_breakdown']['positive_percent']}% positive, {ra['sentiment_breakdown']['neutral_percent']}% neutral, {ra['sentiment_breakdown']['negative_percent']}% negative)."
+                f"{flaw_note} {ra['ai_improvement_suggestions'][0]}"
+            )
+
+    elif any(k in lower for k in ["engagement", "orders", "sales", "revenue", "performance", "how am i doing", "business", "વેચાણ", "ઓર્ડર"]):
         executed_tools.append({
-            "tool": "suggest_price_drop",
+            "tool": "analyze_engagement",
             "status": "success",
-            "output": "Found 2 products where 5% price reduction can boost sales by 35%."
+            "output": f"{total_orders} total order(s), {completion_rate}% completion rate, ₹{total_revenue_paise / 100:,.2f} revenue from completed orders."
         })
-        response_text = "💡 **AI Price Optimization Tool**: I analyzed your catalog against current market trends. Reducing prices on your top 2 items by 5% will unlock the 'Best Value' badge and increase conversion rates by up to 35%."
+        if total_orders == 0:
+            response_text = "📊 **AI Engagement Analysis Tool**: You haven't received any orders yet. Once buyers start ordering, I'll track your completion rate and revenue here."
+        else:
+            response_text = (
+                f"📊 **AI Engagement Analysis Tool**: You've received **{total_orders} order(s)** total — "
+                f"**{len(completed_orders)} completed**, **{len(cancelled_orders)} cancelled**, "
+                f"a **{completion_rate}% completion rate**. Completed orders have earned you **₹{total_revenue_paise / 100:,.2f}** so far."
+            )
 
     elif any(k in lower for k in ["stock", "inventory", "quantities", "માલ", "જથ્થો", "સ્ટોક", "સામાન"]):
-        executed_tools.append({
-            "tool": "alert_low_stock",
-            "status": "warning",
-            "output": "3 items have under 50 units remaining."
-        })
-        response_text = "⚠️ **AI Stock Alert Tool**: 3 of your listings are selling fast and have under 50 units remaining. Replenish inventory soon to avoid losing search rank."
+        if low_stock_items:
+            names = ", ".join(l.get("title", "") for l in low_stock_items[:5])
+            executed_tools.append({
+                "tool": "alert_low_stock",
+                "status": "warning",
+                "output": f"{len(low_stock_items)} item(s) have under {LOW_STOCK_THRESHOLD} units remaining."
+            })
+            response_text = f"⚠️ **AI Stock Alert Tool**: {len(low_stock_items)} of your active listings have under {LOW_STOCK_THRESHOLD} units remaining: {names}. Replenish soon to avoid running out."
+        else:
+            executed_tools.append({"tool": "alert_low_stock", "status": "success", "output": "All active listings have healthy stock levels."})
+            response_text = f"✅ **AI Stock Alert Tool**: All of your active listings currently have {LOW_STOCK_THRESHOLD}+ units in stock."
 
-    elif any(k in lower for k in ["seo", "rank", "keyword", "title", "search", "ટાઇટલ", "ખરીદી"]):
+    elif any(k in lower for k in ["price", "discount", "cost", "competitor", "ભાવ", "કિંમત", "દામ", "કીમત"]):
         executed_tools.append({
-            "tool": "optimize_seo_tags",
-            "status": "success",
-            "output": "Generated 5 high-converting search keywords for active listings."
+            "tool": "review_pricing",
+            "status": "info",
+            "output": f"Reviewed pricing across {len(seller_listings)} listing(s)."
         })
-        response_text = "🔍 **AI SEO Enhancer Tool**: Added target keywords like `best_price_2026`, `verified_quality`, and `fast_dispatch`. This will improve your search visibility on Samuday by ~40%."
+        response_text = (
+            f"💡 **AI Price Review Tool**: You currently have **{len(seller_listings)} listing(s)**. "
+            "I don't have live competitor pricing data connected yet, so I can't quantify a specific price-drop impact — "
+            "but you can ask me to analyze which of your listings has the lowest ratings or highest cancellation rate, "
+            "which is a data-backed way to prioritize where a price or quality fix would help most."
+        )
 
     else:
         executed_tools.append({
-            "tool": "recommend_ad_campaign",
+            "tool": "seller_summary",
             "status": "info",
-            "output": "Hero Banner ad spot has 45,000+ daily impressions available."
+            "output": f"{len(seller_listings)} listings, {total_orders} orders, {review_analytics['total_reviews']} reviews on file."
         })
-        response_text = f"✨ **AI Seller Assistant**: You currently have **{len(seller_listings)} active listings**. I recommend launching a **Hero Banner Ad Campaign** for your top featured product to get 45,000+ impressions this weekend!"
+        response_text = (
+            f"✨ **AI Seller Assistant**: You currently have **{len(seller_listings)} listing(s)**, "
+            f"**{total_orders} order(s)** ({completion_rate}% completion rate), and "
+            f"**{review_analytics['total_reviews']} buyer review(s)** "
+            f"(avg {review_analytics['average_rating']}/5). Ask me to analyze your reviews, engagement, pricing, or stock for specifics."
+        )
 
-    # Try NVIDIA LLM enhancement
-    llm_prompt = f"Seller query: '{prompt}'\nSeller's active listings ({len(seller_listings)} items):\n" + "\n".join([
-        f"- {l.get('title')} @ ₹{l.get('price', 0)/100:.2f} (Qty: {l.get('quantity')})"
-        for l in seller_listings[:5]
-    ]) + "\nProvide helpful, structured e-commerce advice with Markdown bullet points."
-    llm_reply = await call_nvidia_llm(llm_prompt, "You are an expert AI seller business coach and diagnostic agent.")
+    # Try NVIDIA LLM enhancement — grounded strictly in the real data computed above
+    recent_comments = [r["review_text"] for r in reviews[:5] if r.get("review_text")]
+    llm_prompt = (
+        f"Seller query: '{prompt}'\n\n"
+        f"Seller's listings ({len(seller_listings)} items):\n" + "\n".join([
+            f"- {l.get('title')} @ ₹{l.get('price', 0)/100:.2f} (Qty: {l.get('quantity')}, status: {l.get('status')})"
+            for l in seller_listings[:5]
+        ]) +
+        f"\n\nReal engagement data: {total_orders} total orders, {len(completed_orders)} completed, "
+        f"{len(cancelled_orders)} cancelled, {completion_rate}% completion rate, "
+        f"₹{total_revenue_paise / 100:.2f} total revenue from completed orders.\n"
+        f"\nReal review data: {review_analytics['total_reviews']} review(s), "
+        f"{review_analytics['average_rating']}/5 average rating, "
+        f"{review_analytics['sentiment_breakdown']['positive_percent']}% positive sentiment."
+        + (f" Recent review comments: {'; '.join(recent_comments)}" if recent_comments else " No review comments yet.") +
+        "\n\nProvide helpful, structured e-commerce advice using Markdown: bullet points for lists, "
+        "and a Markdown pipe table (| Column | Column |\\n|---|---|\\n| ... |) whenever comparing "
+        "multiple listings, prices, or metrics side by side. Base your analysis strictly on the real data "
+        "given above — if the data needed to answer isn't provided (e.g. no reviews yet, no orders yet), say so "
+        "plainly instead of inventing numbers, percentages, or trends."
+    )
+    llm_reply = await call_nvidia_llm(
+        llm_prompt,
+        "You are an expert AI seller business coach and diagnostic agent for an e-commerce platform. "
+        "Only use the real data provided in the prompt; never fabricate statistics, percentages, or results."
+    )
     if llm_reply:
         response_text = llm_reply
+
+    suggested_actions = []
+    if low_stock_items:
+        suggested_actions.append("Replenish Low Stock Items")
+    if review_analytics["total_reviews"] > 0 and review_analytics["sentiment_breakdown"]["negative_percent"] > 0:
+        suggested_actions.append("Review Flagged Customer Feedback")
+    if total_orders == 0:
+        suggested_actions.append("Promote Your First Listing")
+    if not suggested_actions:
+        suggested_actions.append("Ask Me to Analyze Reviews or Engagement")
 
     return {
         "reply": response_text,
         "tools_executed": executed_tools,
         "timestamp": "Just now",
-        "suggested_actions": [
-            "Apply 5% Price Reduction",
-            "Replenish Low Stock Items",
-            "Purchase Hero Banner Ad"
-        ]
+        "suggested_actions": suggested_actions
     }
 
 
-async def get_seller_ai_insights(seller_listings: List[Dict[str, Any]], sales: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _parse_iso(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+async def get_seller_ai_insights(
+    seller_listings: List[Dict[str, Any]],
+    sales: List[Dict[str, Any]],
+    orders: List[Dict[str, Any]],
+    review_analytics: Dict[str, Any],
+) -> Dict[str, Any]:
     """
-    Generates real-time AI Insights & live notifications feed for the seller dashboard.
+    Generates the seller dashboard's "Live AI Insight" banner and notification feed from the
+    seller's real listings/orders/reviews — replaces an earlier version that returned the same
+    hardcoded fake stats (28% page-view spike, 94% health score, etc.) to every seller regardless
+    of their actual data.
     """
+    now = datetime.now(timezone.utc)
     total_listings = len(seller_listings)
-    
-    live_notifications = [
-        {
-            "id": "notif-1",
-            "type": "success",
-            "title": "📈 Revenue Spike",
-            "message": "Your listings experienced a 28% increase in page views over the last 48 hours!",
-            "time": "10 mins ago"
-        },
-        {
-            "id": "notif-2",
-            "type": "warning",
-            "title": "⚡ Low Stock Warning",
-            "message": "Stock for 2 items is running low. Restock now to maintain Buy Box placement.",
-            "time": "1 hour ago"
-        },
-        {
-            "id": "notif-3",
-            "type": "info",
-            "title": "🏷️ Ad Placement Recommendation",
-            "message": "Sidebar Ads are performing 40% better for products in your category.",
-            "time": "3 hours ago"
-        }
+    active_listings = [l for l in seller_listings if l.get("status") == "active"]
+    low_stock_items = [l for l in active_listings if (l.get("quantity") or 0) < LOW_STOCK_THRESHOLD]
+
+    completed_orders = [o for o in orders if o.get("status") == "completed"]
+    completion_rate = round(len(completed_orders) / len(orders) * 100) if orders else None
+    recent_orders = [o for o in orders if (dt := _parse_iso(o.get("created_at"))) and dt >= now - timedelta(hours=48)]
+
+    expiring_sales = [
+        s for s in sales
+        if s.get("status") == "active" and (dt := _parse_iso(s.get("end_date"))) and now <= dt <= now + timedelta(days=3)
     ]
 
+    notifications = []
+
+    if recent_orders:
+        notifications.append({
+            "id": "orders-48h",
+            "type": "success",
+            "title": "📈 New Orders",
+            "message": f"You received {len(recent_orders)} order(s) in the last 48 hours.",
+            "time": "Live"
+        })
+
+    if review_analytics.get("total_reviews", 0) > 0 and review_analytics["sentiment_breakdown"]["negative_percent"] > 0:
+        notifications.append({
+            "id": "negative-reviews",
+            "type": "warning",
+            "title": "⚠️ Reviews Need Attention",
+            "message": f"{review_analytics['sentiment_breakdown']['negative_percent']}% of your {review_analytics['total_reviews']} review(s) are negative. Check the Reviews tab for details.",
+            "time": "Live"
+        })
+
+    if low_stock_items:
+        names = ", ".join(l.get("title", "") for l in low_stock_items[:3])
+        notifications.append({
+            "id": "low-stock",
+            "type": "warning",
+            "title": "⚡ Low Stock Warning",
+            "message": f"{len(low_stock_items)} listing(s) have under {LOW_STOCK_THRESHOLD} units remaining: {names}.",
+            "time": "Live"
+        })
+
+    if expiring_sales:
+        names = ", ".join(s.get("title", "") for s in expiring_sales[:3])
+        notifications.append({
+            "id": "sales-expiring",
+            "type": "info",
+            "title": "⏳ Sale Event(s) Ending Soon",
+            "message": f"{len(expiring_sales)} sale event(s) end within 3 days: {names}.",
+            "time": "Live"
+        })
+
+    if total_listings == 0:
+        notifications.append({
+            "id": "no-listings",
+            "type": "info",
+            "title": "🚀 Get Started",
+            "message": "You haven't published any listings yet. Add your first product to start selling.",
+            "time": "Live"
+        })
+
+    if not notifications:
+        notifications.append({
+            "id": "all-clear",
+            "type": "success",
+            "title": "✅ All Clear",
+            "message": "No urgent issues right now — stock levels, orders, and reviews all look healthy.",
+            "time": "Live"
+        })
+
+    # Health score: a real composite of completion rate, review rating, and stock health —
+    # only includes components that have actual data behind them (no data = not averaged in,
+    # rather than assuming a default).
+    health_components = []
+    if completion_rate is not None:
+        health_components.append(completion_rate)
+    if review_analytics.get("total_reviews", 0) > 0:
+        health_components.append(review_analytics["average_rating"] / 5 * 100)
+    if active_listings:
+        stock_health = max(0, 100 - len(low_stock_items) / len(active_listings) * 100)
+        health_components.append(stock_health)
+    health_score = round(sum(health_components) / len(health_components)) if health_components else None
+
+    if low_stock_items:
+        recommendation = f"Restock {low_stock_items[0].get('title')} — it's running low and could go out of stock."
+    elif review_analytics.get("total_reviews", 0) > 0 and review_analytics["sentiment_breakdown"]["negative_percent"] > 0:
+        recommendation = "Some buyers left negative reviews recently — review them and consider replying personally."
+    elif total_listings == 0:
+        recommendation = "Publish your first listing to start appearing in search and category pages."
+    elif not sales:
+        recommendation = "You don't have any active sale events — consider launching one to boost visibility."
+    else:
+        recommendation = "Your shop is running smoothly — keep listings updated and respond to buyer messages promptly."
+
     summary = {
-        "health_score": 94,
-        "seo_optimization_status": "92% Optimized",
-        "competitor_price_index": "Optimal",
+        "health_score": health_score,
         "total_listings": total_listings,
         "active_sales_count": len(sales),
-        "ai_recommendation": "Feature your top-rated item in the upcoming Kisan Harvest Sale to double visibility."
+        "ai_recommendation": recommendation,
     }
 
     return {
         "summary": summary,
-        "notifications": live_notifications
+        "notifications": notifications
     }
 
 
@@ -807,33 +1094,135 @@ async def auto_reply_buyer_review(buyer_name: str, rating: int, review_text: str
 
 async def get_review_analytics(reviews_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Summarizes review sentiment distribution, top customer praise, product flaw reports,
-    and actionable quality improvement recommendations.
+    Summarizes real review sentiment distribution from the seller's actual reviews.
+    Returns a "no data yet" shape (not invented numbers) when there are none.
     """
-    total = len(reviews_list) or 12
+    total = len(reviews_list)
+    if total == 0:
+        return {
+            "total_reviews": 0,
+            "average_rating": 0,
+            "sentiment_breakdown": {"positive_percent": 0, "neutral_percent": 0, "negative_percent": 0},
+            "top_praises": [],
+            "flaw_reports": [],
+            "ai_improvement_suggestions": ["No reviews yet — insights will appear here once buyers start rating completed orders."]
+        }
+
+    ratings = [r.get("rating", 0) for r in reviews_list]
+    average_rating = round(sum(ratings) / total, 1)
+    positive = sum(1 for r in ratings if r >= 4)
+    neutral = sum(1 for r in ratings if r == 3)
+    negative = sum(1 for r in ratings if r <= 2)
+
+    comments = [r.get("review_text", "") for r in reviews_list if r.get("review_text")]
+    suggestions = []
+    if negative > 0:
+        suggestions.append("Review your lower-rated orders below and consider reaching out to those buyers directly.")
+    if not suggestions:
+        suggestions.append("Keep it up — your reviews are trending positive!")
+
     return {
         "total_reviews": total,
-        "average_rating": 4.6,
+        "average_rating": average_rating,
         "sentiment_breakdown": {
-            "positive_percent": 85,
-            "neutral_percent": 10,
-            "negative_percent": 5
+            "positive_percent": round(positive / total * 100),
+            "neutral_percent": round(neutral / total * 100),
+            "negative_percent": round(negative / total * 100),
         },
-        "top_praises": [
-            "Super fast 24-hour delivery",
-            "Crisp & vibrant product packaging",
-            "Direct farm-fresh organic quality",
-            "Excellent value for money"
-        ],
-        "flaw_reports": [
-            "Outer cardboard box slightly crushed during transit (2 mentions)",
-            "User manual print font size small (1 mention)"
-        ],
-        "ai_improvement_suggestions": [
-            "Upgrade outer shipping box padding for fragile items",
-            "Include digital PDF version of user manual on listing page"
-        ]
+        "top_praises": comments[:4],
+        "flaw_reports": [c for c in comments if any(k in c.lower() for k in ["bad", "poor", "late", "delay", "broken", "damaged", "issue"])][:4],
+        "ai_improvement_suggestions": suggestions
     }
+
+
+# Category inference keywords for the shopping copilot's retrieval — deliberately
+# separate from ai/service.py's own listing-generator cat_keywords dict since the
+# vocabularies buyers search with (plurals, colloquialisms) differ from what sellers
+# title their listings with.
+COPILOT_CATEGORY_KEYWORDS = {
+    "Agriculture": ["wheat", "rice", "mango", "gehu", "ghee", "kheti", "kisan", "basmati", "crop", "seed",
+                    "seeds", "fertilizer", "organic", "harvest", "farm", "grain", "grains", "vegetable",
+                    "vegetables", "dal", "atta", "flour"],
+    "Fashion": ["shirt", "shirts", "jeans", "saree", "kurti", "wear", "cloth", "clothing", "shoes", "shoe",
+                "dress", "jacket", "watch", "watches", "footwear", "apparel"],
+    "Electronics": ["tv", "television", "phone", "phones", "mobile", "mobiles", "smartphone", "smartphones",
+                     "headphone", "headphones", "laptop", "laptops", "speaker", "speakers", "camera", "cameras",
+                     "earbuds", "earphone", "earphones", "tablet", "charger", "smartwatch", "monitor",
+                     "electronics", "gadget", "gadgets"],
+    "Home/Construction": ["fan", "fans", "mattress", "cookware", "flask", "furniture", "sofa", "bed",
+                           "light", "bulb", "paint", "cement", "pipe", "inverter", "ups"],
+    "Health": ["face wash", "protein", "medicine", "medicines", "supplement", "vitamin", "ayurvedic",
+               "health", "gym", "yoga"],
+    "Automobiles": ["car", "cars", "bike", "bikes", "tyre", "tyres", "tire", "helmet", "scooter",
+                     "vehicle", "motor"],
+    "Retail/FMCG": ["soap", "shampoo", "detergent", "snack", "snacks", "biscuit", "tea", "coffee", "grocery"],
+    "Education": ["book", "books", "course", "tuition", "coaching", "study", "exam", "notebook"],
+    "Jobs": ["job", "jobs", "vacancy", "hiring", "career", "employment", "recruit", "recruiter"],
+}
+
+_PRICE_NUM = r'(?:rs\.?|₹|inr)?\s*(\d[\d,]*(?:\.\d+)?\s*k?)\b'
+
+
+def _parse_price_token(token: str) -> int:
+    """Converts a matched price fragment like '20,000' or '20k' into paise."""
+    t = token.strip().lower().replace(",", "").replace("₹", "").replace("rs.", "").replace("rs", "").replace("inr", "").strip()
+    if t.endswith("k"):
+        value = float(t[:-1]) * 1000
+    else:
+        value = float(t)
+    return int(value * 100)
+
+
+def extract_price_range_paise(query: str):
+    """
+    Parses natural-language price constraints ('under 20,000', 'between 500 and 1000',
+    '20000 से कम', '500 થી ઓછું') into (price_min_paise, price_max_paise).
+    Kept independent of the LLM extraction step so price filtering works even when
+    the LLM is unavailable or ignores instructions to drop price phrases.
+    """
+    t = query.lower()
+
+    m = re.search(rf'between\s*{_PRICE_NUM}\s*(?:and|to|-)\s*{_PRICE_NUM}', t)
+    if m:
+        a, b = _parse_price_token(m.group(1)), _parse_price_token(m.group(2))
+        return min(a, b), max(a, b)
+
+    price_max = None
+    m = re.search(rf'(?:under|below|less than|upto|up to|within|max(?:imum)?)\s*{_PRICE_NUM}', t)
+    if m:
+        price_max = _parse_price_token(m.group(1))
+    else:
+        m = re.search(rf'{_PRICE_NUM}\s*(?:से\s*कम|थी\s*ઓછું|se\s*kam)', t)
+        if m:
+            price_max = _parse_price_token(m.group(1))
+
+    price_min = None
+    m = re.search(rf'(?:over|above|more than|min(?:imum)?)\s*{_PRICE_NUM}', t)
+    if m:
+        price_min = _parse_price_token(m.group(1))
+    else:
+        m = re.search(rf'{_PRICE_NUM}\s*(?:से\s*(?:ज़्यादा|ज्यादा|अधिक)|થી\s*(?:વધારે|વધુ))', t)
+        if m:
+            price_min = _parse_price_token(m.group(1))
+
+    if price_min is None and price_max is None:
+        m = re.search(rf'(?:around|near|approx(?:imately)?)\s*{_PRICE_NUM}', t)
+        if m:
+            mid = _parse_price_token(m.group(1))
+            price_min, price_max = int(mid * 0.7), int(mid * 1.3)
+
+    return price_min, price_max
+
+
+def infer_category_from_text(text: str) -> Optional[str]:
+    """Best-effort category guess from free text, used to bias/restrict catalog retrieval."""
+    low = text.lower()
+    best_cat, best_hits = None, 0
+    for cat, keywords in COPILOT_CATEGORY_KEYWORDS.items():
+        hits = sum(1 for kw in keywords if kw in low)
+        if hits > best_hits:
+            best_cat, best_hits = cat, hits
+    return best_cat
 
 
 async def customer_shopping_copilot(query: str, db: AsyncSession, lang: str = "en") -> Dict[str, Any]:
@@ -847,15 +1236,18 @@ async def customer_shopping_copilot(query: str, db: AsyncSession, lang: str = "e
     # 1. AI-Driven Search keyword extraction (Translating to English for DB indexing match)
     extracted_search = ""
     extract_system = (
-        "You are an assistant that extracts the single best English search term (1-3 words) "
+        "You are an assistant that extracts the single best English PRODUCT search term (1-3 words) "
         "for an e-commerce catalog from a user query, translating it to English if it is in another language. "
-        "Respond only with the English query words (nothing else). "
+        "Respond only with the English product words (nothing else). "
         "Do not write sentences or punctuation. "
+        "CRITICAL: Never include price, budget, quantity, or currency information (e.g. 'under 20000', "
+        "'below 500', 'for 2000 rupees') in your answer -- return only the product name/type. "
         "Examples:\n"
         "User: 'Show me some nice cotton formal shirts' -> 'cotton formal shirt'\n"
-        "User: 'मुझे ताज़ा जैविक गेहूं चाहिए' -> 'organic wheat'\n"
         "User: 'મને બૂટ ખરીદવા છે' -> 'shoes'\n"
-        "User: 'I want to buy a smartphone' -> 'smartphone'"
+        "User: 'I want to buy a smartphone' -> 'smartphone'\n"
+        "User: 'Best smartphones under 20,000' -> 'smartphone'\n"
+        "User: 'wheat between 500 and 1000 rupees' -> 'wheat'"
     )
     extract_user = f"Extract e-commerce search term from: '{query}'"
     try:
@@ -903,10 +1295,19 @@ async def customer_shopping_copilot(query: str, db: AsyncSession, lang: str = "e
     search_tokens = []
     if extracted_search:
         search_tokens = [w.strip().lower() for w in re.split(r'\s+', extracted_search) if len(w.strip()) > 1]
-    
+
     # If LLM didn't return good tokens, parse from user query
     if not search_tokens:
         search_tokens = [w for w in re.findall(r'\w+', lower) if len(w) > 1 and w not in conversational_fillers]
+
+    # Always strip fillers and bare numbers/prices from whichever source produced the
+    # tokens — the LLM extractor is instructed to drop price phrases but small models
+    # don't reliably follow that, and a literal token like "20000" or "under" almost
+    # never appears verbatim in a title/description, silently starving the search.
+    search_tokens = [
+        t for t in search_tokens
+        if t not in conversational_fillers and not re.fullmatch(r'[\d,]+k?', t)
+    ]
 
     # Map cross-lingual tokens
     mapped_tokens = []
@@ -914,46 +1315,83 @@ async def customer_shopping_copilot(query: str, db: AsyncSession, lang: str = "e
         if token in cross_lingual_dict:
             mapped_tokens.append(cross_lingual_dict[token])
     search_tokens.extend(mapped_tokens)
-    
+
     # Remove duplicates while preserving order
     search_tokens = list(dict.fromkeys(search_tokens))
 
-    logger.info(f"AI Copilot search tokens: {search_tokens}")
+    # Price and category intent are parsed independently of the keyword tokens above,
+    # so "under 20,000" constrains price rather than being searched for as literal text.
+    price_min_paise, price_max_paise = extract_price_range_paise(query)
+    inferred_category = infer_category_from_text(query) or infer_category_from_text(" ".join(search_tokens))
 
-    # 2. Database search query execution (RAG)
-    db_listings = []
+    logger.info(
+        f"AI Copilot parsed query -> tokens={search_tokens}, category={inferred_category}, "
+        f"price_min_paise={price_min_paise}, price_max_paise={price_max_paise}"
+    )
+
+    # 2. Database search query execution (RAG), tried from most to least specific so a
+    # confident category/price match is never displaced by an unrelated keyword fallback.
+    async def _query_tier(category: Optional[str], use_price: bool, use_keywords: bool) -> List[Listing]:
+        q = (
+            select(Listing)
+            .options(selectinload(Listing.media), selectinload(Listing.category))
+            .where(Listing.status == "active")
+        )
+        if category:
+            q = q.where(Listing.category.has(Category.name == category))
+        if use_price:
+            if price_min_paise is not None:
+                q = q.where(Listing.price >= price_min_paise)
+            if price_max_paise is not None:
+                q = q.where(Listing.price <= price_max_paise)
+        if use_keywords and search_tokens:
+            kw_conditions = []
+            for token in search_tokens:
+                kw_conditions.append(Listing.title.ilike(f"%{token}%"))
+                kw_conditions.append(Listing.description.ilike(f"%{token}%"))
+                kw_conditions.append(Listing.category.has(Category.name.ilike(f"%{token}%")))
+            q = q.where(or_(*kw_conditions))
+        # Newest-first: a stable tiebreaker for the Python relevance-score sort below,
+        # and otherwise Postgres's undefined row order skews toward older rows.
+        q = q.order_by(Listing.created_at.desc())
+        res = await db.execute(q)
+        return list(res.scalars().all())
+
+    has_price = price_min_paise is not None or price_max_paise is not None
+    tier_specs = []
+    if inferred_category and search_tokens:
+        tier_specs.append((inferred_category, True, True))
+        tier_specs.append((inferred_category, False, True))
+    if inferred_category:
+        tier_specs.append((inferred_category, True, False))
+        tier_specs.append((inferred_category, False, False))
     if search_tokens:
-        try:
-            conditions = []
-            for token in search_tokens:
-                conditions.append(Listing.title.ilike(f"%{token}%"))
-                conditions.append(Listing.description.ilike(f"%{token}%"))
-            
-            query_select = (
-                select(Listing)
-                .join(Listing.category, isouter=True)
-                .options(selectinload(Listing.media), selectinload(Listing.category))
-                .where(Listing.status == "active")
-            )
-            
-            cat_conditions = []
-            for token in search_tokens:
-                cat_conditions.append(Category.name.ilike(f"%{token}%"))
-                
-            query_select = query_select.where(or_(*(conditions + cat_conditions)))
-            
-            res = await db.execute(query_select)
-            db_listings = list(res.scalars().all())
-        except Exception as e:
-            logger.error(f"AI Catalog search database query failed: {e}")
+        tier_specs.append((None, True, True))
+        tier_specs.append((None, False, True))
+    if has_price:
+        tier_specs.append((None, True, False))
 
-    # Fallback to general list if no matches
+    db_listings: List[Listing] = []
+    for category, use_price, use_keywords in tier_specs:
+        try:
+            db_listings = await _query_tier(category, use_price, use_keywords)
+        except Exception as e:
+            logger.error(f"AI Catalog tiered search failed (category={category}, price={use_price}, kw={use_keywords}): {e}")
+            db_listings = []
+        if db_listings:
+            break
+
+    # Fallback to most recently published listings if nothing above matched at all.
+    # Ordering by created_at is essential here: without it Postgres returns rows in
+    # arbitrary physical order under LIMIT, which tends to favor older rows and can
+    # permanently hide newly-added products from this fallback.
     if not db_listings:
         try:
             res = await db.execute(
                 select(Listing)
                 .options(selectinload(Listing.media), selectinload(Listing.category))
                 .where(Listing.status == "active")
+                .order_by(Listing.created_at.desc())
                 .limit(50)
             )
             db_listings = list(res.scalars().all())
@@ -997,7 +1435,7 @@ async def customer_shopping_copilot(query: str, db: AsyncSession, lang: str = "e
             "title": l.title,
             "price": l.price,
             "description": l.description,
-            "image": l.media[0].media_url if l.media else "https://via.placeholder.com/150",
+            "image": l.media[0].media_url if l.media else "",
             "category_name": l.category.name if l.category else "General"
         })
 

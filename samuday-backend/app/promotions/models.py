@@ -16,7 +16,8 @@ class SaleEvent(Base):
     discount_percent = Column(Integer, default=0, nullable=False)
     start_date = Column(DateTime(timezone=True), nullable=False)
     end_date = Column(DateTime(timezone=True), nullable=False)
-    listing_ids_json = Column(Text, nullable=True)  # JSON array of listing UUIDs
+    listing_ids_json = Column(Text, nullable=True)  # JSON array of listing UUIDs; empty/null = all of the seller's listings
+    overrides_json = Column(Text, nullable=True)  # JSON dict of {listing_id: discount_percent} overrides
     status = Column(String, default="active", nullable=False)  # active, ended, cancelled
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
@@ -29,6 +30,8 @@ class Advertisement(Base):
     title = Column(String(200), nullable=False)
     image_url = Column(String, nullable=False)
     link_url = Column(String, nullable=True)  # URL to redirect on click
+    listing_id = Column(UUID(as_uuid=True), nullable=True)  # the product this ad advertises
+    ai_generated = Column(Boolean, default=False, nullable=False)
     placement = Column(String, default="hero_banner", nullable=False)  # hero_banner, sidebar, category_strip
     cost_paise = Column(BigInteger, default=0, nullable=False)
     status = Column(String, default="active", nullable=False)  # pending, active, expired

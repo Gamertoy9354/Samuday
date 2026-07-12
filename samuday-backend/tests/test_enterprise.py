@@ -63,10 +63,11 @@ async def test_enterprise_scale_and_polish_flow(client: AsyncClient, db_session:
     assert checkout_data["amount"] == 10000
     
     gateway_order_id = checkout_data["gateway_order_id"]
+    signature = checkout_data["signature"]
 
     # Trigger Payment success callback webhook
     callback_res = await client.post(
-        f"/api/v1/wallet/payment/callback?gateway_order_id={gateway_order_id}&payment_id=pay_998811&signature=sig_valid_hash_99&amount=10000",
+        f"/api/v1/wallet/payment/callback?gateway_order_id={gateway_order_id}&payment_id=pay_998811&signature={signature}",
         headers=headers_buyer
     )
     assert callback_res.status_code == 200
@@ -98,6 +99,7 @@ async def test_enterprise_scale_and_polish_flow(client: AsyncClient, db_session:
     # Seed an Agriculture category
     cat_res = await client.post(
         "/api/v1/marketplace/categories",
+        headers=headers_seller,
         json={"name": "Agriculture", "pillar": "kisan"}
     )
     assert cat_res.status_code == 201

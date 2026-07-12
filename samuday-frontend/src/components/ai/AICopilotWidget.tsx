@@ -2,54 +2,8 @@ import React, { useState } from 'react';
 import { aiAPI, cartAPI } from '../../api/client';
 import { useCart } from '../../context/CartContext';
 import { Bot, X, Send, Mic, Sparkles, ShoppingBag } from 'lucide-react';
-
-const renderFormattedText = (text: string) => {
-  if (!text) return null;
-  const lines = text.split('\n');
-  return lines.map((line, idx) => {
-    let isBullet = false;
-    let cleanLine = line;
-    if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
-      isBullet = true;
-      cleanLine = line.trim().replace(/^[-*]\s+/, '');
-    }
-
-    const parts: React.ReactNode[] = [];
-    const boldRegex = /\*\*(.*?)\*\*/g;
-    let match;
-    let lastIndex = 0;
-
-    while ((match = boldRegex.exec(cleanLine)) !== null) {
-      const matchIndex = match.index;
-      if (matchIndex > lastIndex) {
-        parts.push(cleanLine.substring(lastIndex, matchIndex));
-      }
-      parts.push(<strong key={matchIndex}>{match[1]}</strong>);
-      lastIndex = boldRegex.lastIndex;
-    }
-
-    if (lastIndex < cleanLine.length) {
-      parts.push(cleanLine.substring(lastIndex));
-    }
-
-    const content = parts.length > 0 ? parts : cleanLine;
-
-    if (isBullet) {
-      return (
-        <div key={idx} style={{ display: 'flex', gap: 6, margin: '4px 0 4px 8px', fontSize: '0.84rem', lineHeight: 1.45 }}>
-          <span>•</span>
-          <span>{content}</span>
-        </div>
-      );
-    }
-
-    return (
-      <p key={idx} style={{ margin: '4px 0', fontSize: '0.86rem', lineHeight: 1.45 }}>
-        {content}
-      </p>
-    );
-  });
-};
+import { FALLBACK_IMAGE } from '../../utils/placeholder';
+import { renderFormattedText } from '../../utils/textFormat';
 
 export const AICopilotWidget: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -221,7 +175,7 @@ export const AICopilotWidget: React.FC = () => {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
                     {m.products.map((p: any) => (
                       <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 8, background: '#fff', borderRadius: 8, border: '1px solid var(--border-light)' }}>
-                        <img src={p.image} alt="" style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 6 }} />
+                        <img src={p.image || FALLBACK_IMAGE} alt="" style={{ width: 44, height: 44, objectFit: 'cover', borderRadius: 6 }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontWeight: 600, fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.title}</div>
                           <div style={{ fontSize: '0.78rem', color: 'var(--primary)', fontWeight: 700 }}>₹{(p.price / 100).toLocaleString('en-IN')}</div>

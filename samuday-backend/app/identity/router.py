@@ -1,16 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
+from uuid import UUID
 
 from app.core.database import get_db
-from app.core.security import get_current_user, create_access_token, create_refresh_token
+from app.core.security import get_current_user, get_current_admin_user, create_access_token, create_refresh_token, verify_token
 from app.core.middleware import t
 from app.identity import service
 from app.identity.models import User
 from app.identity.schemas import (
     OTPRequest, OTPVerify, TokenResponse, UserCreate, UserResponse,
-    KYCSubmission, KYCResponse, VouchCreate, VouchResponse, ReputationResponse,
-    GoogleAuthRequest, UserProfileUpdate
+    KYCSubmission, KYCResponse, KYCDetailResponse, KYCReviewRequest, VouchCreate, VouchResponse, ReputationResponse,
+    GoogleAuthRequest, UserProfileUpdate, RefreshTokenRequest
 )
 
 router = APIRouter(prefix="/identity", tags=["Identity & KYC"])
@@ -72,6 +73,25 @@ async def google_auth_endpoint(payload: GoogleAuthRequest, db: AsyncSession = De
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
+@router.post("/auth/refresh", response_model=TokenResponse)
+async def refresh_token_endpoint(payload: RefreshTokenRequest, db: AsyncSession = Depends(get_db)):
+    """Exchanges a valid, unexpired refresh token for a new access token (and a rotated refresh token)."""
+    token_payload = verify_token(payload.refresh_token)
+    if not token_payload or token_payload.get("type") != "refresh":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
+
+    user_id = token_payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+
+    user = await service.get_user_by_id(db, UUID(user_id))
+    if not user or user.status != "active":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account not found or inactive")
+
+    access_token = create_access_token(data={"sub": str(user.id)})
+    new_refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    return TokenResponse(access_token=access_token, refresh_token=new_refresh_token)
+
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
     """Retrieves current user's decrypted profile."""
@@ -96,6 +116,39 @@ async def submit_kyc_endpoint(
     """Submits KYC document links to the trust queue."""
     record = await service.submit_kyc(db, current_user.id, payload)
     return record
+
+@router.get("/admin/kyc/pending", response_model=List[KYCDetailResponse])
+async def list_pending_kyc_endpoint(
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin: lists all pending KYC submissions for review (local-tier sellers and individual identity verifications)."""
+    return await service.list_pending_kyc(db)
+
+@router.post("/admin/kyc/{kyc_id}/approve", response_model=KYCResponse)
+async def approve_kyc_endpoint(
+    kyc_id: UUID,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin: approves a local-tier seller's KYC submission."""
+    try:
+        return await service.review_kyc(db, kyc_id, current_user.id, approve=True)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+@router.post("/admin/kyc/{kyc_id}/reject", response_model=KYCResponse)
+async def reject_kyc_endpoint(
+    kyc_id: UUID,
+    payload: KYCReviewRequest,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin: rejects a local-tier seller's KYC submission with a reason."""
+    try:
+        return await service.review_kyc(db, kyc_id, current_user.id, approve=False, rejection_reason=payload.rejection_reason)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.post("/vouch", response_model=VouchResponse, status_code=status.HTTP_201_CREATED)
 async def submit_vouch_endpoint(

@@ -45,6 +45,18 @@ class PayoutRequest(Base):
     processed_at = Column(DateTime(timezone=True), nullable=True)
     payout_batch_id = Column(UUID(as_uuid=True), nullable=True)
 
+class PaymentOrder(Base):
+    __tablename__ = "payment_orders"
+    __table_args__ = {"schema": "wallet"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    gateway_order_id = Column(String, unique=True, index=True, nullable=False)
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    amount = Column(BigInteger, nullable=False)  # paise, fixed at checkout creation time
+    status = Column(String, default="created", nullable=False)  # created, completed
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
 class EscrowHold(Base):
     __tablename__ = "escrow_holds"
     __table_args__ = {"schema": "wallet"}

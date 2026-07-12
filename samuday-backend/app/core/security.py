@@ -81,3 +81,12 @@ async def get_current_user(
         )
     return user
 
+async def get_current_admin_user(current_user = Depends(get_current_user)):
+    """FastAPI dependency that additionally requires the authenticated user to be an admin."""
+    if not getattr(current_user, "is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator privileges required.",
+        )
+    return current_user
+

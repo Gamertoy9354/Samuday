@@ -5,6 +5,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 
 class SupplierProfile(Base):
+    """Official-tier seller business verification (registered business, GSTIN/PAN)."""
     __tablename__ = "supplier_profiles"
     __table_args__ = {"schema": "enterprise"}
 
@@ -12,7 +13,15 @@ class SupplierProfile(Base):
     user_id = Column(UUID(as_uuid=True), unique=True, nullable=False, index=True)
     business_name = Column(String, nullable=False)
     gstin = Column(String, nullable=False)  # GST identification number
-    is_verified = Column(Boolean, default=False, nullable=False)
+    pan = Column(String, nullable=True)
+    business_phone = Column(String, nullable=True)
+    business_address = Column(String, nullable=True)
+    pincode = Column(String, nullable=True)
+    is_verified = Column(Boolean, default=False, nullable=False)  # kept for backward compat; derive from verification_status
+    verification_status = Column(String, default="pending", nullable=False)  # pending, approved, rejected
+    rejection_reason = Column(String, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    verified_by = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 class AuditLog(Base):

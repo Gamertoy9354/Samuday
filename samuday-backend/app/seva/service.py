@@ -79,9 +79,17 @@ async def get_service_providers(
 async def submit_provider_credentials(
     db: AsyncSession,
     provider_id: UUID,
-    cred_in: ProviderCredentialCreate
+    cred_in: ProviderCredentialCreate,
+    current_user_id: UUID
 ) -> ProviderCredential:
     """Submits licensing credentials for a provider. Encrypts the license number at rest."""
+    prov_result = await db.execute(select(ServiceProvider).where(ServiceProvider.id == provider_id))
+    provider = prov_result.scalars().first()
+    if not provider:
+        raise ValueError("Service provider not found.")
+    if provider.user_id != current_user_id:
+        raise ValueError("Only the provider owner can submit credentials for this profile.")
+
     encrypted_license = encrypt_pii(cred_in.license_number)
     
     credential = ProviderCredential(

@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useCart } from '../../context/CartContext';
-import { Search, ShoppingCart, User, ChevronDown, Package, Store, LogOut, LayoutDashboard } from 'lucide-react';
+import { useWallet } from '../../context/WalletContext';
+import { Search, ShoppingCart, User, ChevronDown, Package, Store, LogOut, LayoutDashboard, Wallet, ShieldCheck } from 'lucide-react';
 
 interface HeaderProps {
   onOpenLogin: () => void;
@@ -11,9 +12,11 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({ onOpenLogin }) => {
   const { user, logout } = useAuth();
   const { cartCount } = useCart();
+  const { balancePaise } = useWallet();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
+  const [avatarError, setAvatarError] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -60,12 +63,26 @@ export const Header: React.FC<HeaderProps> = ({ onOpenLogin }) => {
 
         {/* Actions */}
         <div className="header-actions">
+          {/* Wallet balance */}
+          {user && (
+            <button className="header-action-btn" onClick={() => navigate('/profile')} title="Wallet balance">
+              <Wallet size={20} />
+              <span>&#8377;{(balancePaise / 100).toLocaleString('en-IN')}</span>
+            </button>
+          )}
+
           {/* Account */}
           {user ? (
             <div style={{ position: 'relative' }} ref={dropdownRef}>
               <button className="header-action-btn" onClick={() => setShowDropdown(!showDropdown)}>
-                {user.avatar_url ? (
-                  <img src={user.avatar_url} alt="" style={{ width: 24, height: 24, borderRadius: '50%' }} />
+                {user.avatar_url && !avatarError ? (
+                  <img
+                    src={user.avatar_url}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    style={{ width: 24, height: 24, borderRadius: '50%' }}
+                    onError={() => setAvatarError(true)}
+                  />
                 ) : (
                   <User size={20} />
                 )}
@@ -85,14 +102,20 @@ export const Header: React.FC<HeaderProps> = ({ onOpenLogin }) => {
                   <div className="account-dropdown-item" onClick={() => { navigate('/orders'); setShowDropdown(false); }}>
                     <Package size={16} /> My Orders
                   </div>
-                  {user.is_seller && (
+                  {user.is_seller ? (
                     <div className="account-dropdown-item" onClick={() => { navigate('/seller'); setShowDropdown(false); }}>
                       <LayoutDashboard size={16} /> Seller Dashboard
                     </div>
+                  ) : (
+                    <div className="account-dropdown-item" onClick={() => { navigate('/seller'); setShowDropdown(false); }}>
+                      <Store size={16} /> Become a Seller
+                    </div>
                   )}
-                  <div className="account-dropdown-item" onClick={() => { navigate('/seller'); setShowDropdown(false); }}>
-                    <Store size={16} /> Become a Seller
-                  </div>
+                  {user.is_admin && (
+                    <div className="account-dropdown-item" onClick={() => { navigate('/admin'); setShowDropdown(false); }}>
+                      <ShieldCheck size={16} /> Platform Admin
+                    </div>
+                  )}
                   <div className="account-dropdown-divider" />
                   <div className="account-dropdown-item" onClick={() => { logout(); setShowDropdown(false); navigate('/'); }}>
                     <LogOut size={16} /> Logout

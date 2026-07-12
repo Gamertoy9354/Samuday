@@ -1,8 +1,8 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import { 
-  Smartphone, Shirt, Sprout, Home, HeartPulse, Car, GraduationCap, 
-  ShoppingBag, Factory, Calendar, Building, Briefcase, Package
+import { useNavigate, useLocation } from 'react-router-dom';
+import {
+  Smartphone, Shirt, Sprout, Home, HeartPulse, Car, GraduationCap,
+  ShoppingBag, Factory, Calendar, Building, Briefcase, Package, UserCheck, Users
 } from 'lucide-react';
 
 const CATEGORY_ICONS: Record<string, React.ComponentType<any>> = {
@@ -28,15 +28,31 @@ interface CategoryBarProps {
 
 export const CategoryBar: React.FC<CategoryBarProps> = ({ categories, activeCategory }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isLocalMarketplace = location.search.includes('seller_tier=local');
 
   return (
     <div className="category-bar">
       <div className="category-bar-inner">
         <button
-          className={`category-bar-item ${!activeCategory ? 'active' : ''}`}
+          className={`category-bar-item ${!activeCategory && !isLocalMarketplace ? 'active' : ''}`}
           onClick={() => navigate('/')}
         >
           All
+        </button>
+        <button
+          className={`category-bar-item ${isLocalMarketplace ? 'active' : ''}`}
+          onClick={() => navigate('/search?seller_tier=local')}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+        >
+          <UserCheck size={16} /> Local Marketplace
+        </button>
+        <button
+          className={`category-bar-item ${location.pathname === '/kutumb' ? 'active' : ''}`}
+          onClick={() => navigate('/kutumb')}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+        >
+          <Users size={16} /> Kutumb Network
         </button>
         {categories.map(cat => {
           const IconComp = CATEGORY_ICONS[cat.name] || Package;

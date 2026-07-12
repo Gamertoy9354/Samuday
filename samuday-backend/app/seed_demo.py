@@ -11,8 +11,10 @@ import random
 from datetime import datetime, timezone, timedelta
 
 from app.core.database import AsyncSessionLocal, init_db
+from app.identity.models import User
 from app.marketplace.models import Category, Listing, ListingMedia
 from app.promotions.models import SaleEvent, Advertisement
+from app.wallet.models import Wallet
 from sqlalchemy import select
 
 # Unsplash image URLs for different categories (real, free images)
@@ -250,7 +252,48 @@ async def seed_demo_data():
         await db.execute(text("TRUNCATE TABLE promotions.advertisements CASCADE;"))
         await db.execute(text("TRUNCATE TABLE marketplace.cart_items CASCADE;"))
         await db.commit()
-        
+
+        # Ensure the system seller (owner of all seeded demo listings) exists as a
+        # real user with a funded-capable wallet — otherwise escrow release on order
+        # completion fails with "Seller wallet not found" for every demo product.
+        seller_result = await db.execute(select(User).where(User.id == SYSTEM_SELLER_ID))
+        if not seller_result.scalars().first():
+            db.add(User(
+                id=SYSTEM_SELLER_ID,
+                full_name="Samuday Verified Store",
+                email="store@samuday.demo",
+                is_seller=True,
+                status="active"
+            ))
+            print("[INFO] Created system seller user")
+
+        wallet_result = await db.execute(select(Wallet).where(Wallet.user_id == SYSTEM_SELLER_ID))
+        if not wallet_result.scalars().first():
+            db.add(Wallet(user_id=SYSTEM_SELLER_ID, balance=0, currency="INR", status="active"))
+            print("[INFO] Created system seller wallet")
+
+        # Platform "house" account — accrues platform fee + delivery fee revenue
+        # on order completion. See app/marketplace/fees.py PLATFORM_HOUSE_USER_ID.
+        from app.marketplace.fees import PLATFORM_HOUSE_USER_ID
+        house_result = await db.execute(select(User).where(User.id == PLATFORM_HOUSE_USER_ID))
+        if not house_result.scalars().first():
+            db.add(User(
+                id=PLATFORM_HOUSE_USER_ID,
+                full_name="Samuday Platform (House Account)",
+                email="platform@samuday.internal",
+                is_admin=True,
+                seller_verification_status="approved",
+                status="active"
+            ))
+            print("[INFO] Created platform house user")
+
+        house_wallet_result = await db.execute(select(Wallet).where(Wallet.user_id == PLATFORM_HOUSE_USER_ID))
+        if not house_wallet_result.scalars().first():
+            db.add(Wallet(user_id=PLATFORM_HOUSE_USER_ID, balance=0, currency="INR", status="active"))
+            print("[INFO] Created platform house wallet")
+
+        await db.commit()
+
         # Get categories
         cat_result = await db.execute(select(Category))
         categories = {c.name: c.id for c in cat_result.scalars().all()}

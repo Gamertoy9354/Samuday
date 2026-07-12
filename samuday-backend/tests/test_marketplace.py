@@ -48,6 +48,7 @@ async def test_marketplace_order_escrow_chat_flow(client: AsyncClient, db_sessio
     # 3. Create a Category
     cat_res = await client.post(
         "/api/v1/marketplace/categories",
+        headers=headers_seller,
         json={"name": "Agricultural Crops", "pillar": "kisan"}
     )
     assert cat_res.status_code == 201
@@ -84,13 +85,18 @@ async def test_marketplace_order_escrow_chat_flow(client: AsyncClient, db_sessio
     )
     assert order_res.status_code == 201
     order_data = order_res.json()
-    assert order_data["total_amount"] == 6000
+    # total_amount = product_amount (6000) + 5% platform fee (300) = 6300.
+    # Platform fee applies regardless of fulfillment type; only delivery_fee_amount
+    # is fulfillment-type-dependent (0 for self_pickup).
+    assert order_data["product_amount"] == 6000
+    assert order_data["platform_fee_amount"] == 300
+    assert order_data["total_amount"] == 6300
     assert order_data["status"] == "paid"  # changes to paid immediately as funds enter escrow
     order_id = order_data["id"]
 
-    # Verify Buyer's Wallet debited (10000 - 6000 = 4000)
+    # Verify Buyer's Wallet debited (10000 - 6300 = 3700)
     buyer_bal = await client.get("/api/v1/wallet/balance", headers=headers_buyer)
-    assert buyer_bal.json()["balance"] == 4000
+    assert buyer_bal.json()["balance"] == 3700
 
     # Verify Seller's Wallet balance remains unchanged (still 0)
     seller_bal = await client.get("/api/v1/wallet/balance", headers=headers_seller)

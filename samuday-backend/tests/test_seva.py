@@ -1,7 +1,10 @@
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
+
+from app.identity.models import User
 
 @pytest.mark.asyncio
 async def test_seva_directory_complete_flow(client: AsyncClient, db_session: AsyncSession):
@@ -87,8 +90,14 @@ async def test_seva_directory_complete_flow(client: AsyncClient, db_session: Asy
     assert credential["status"] == "pending"
     credential_id = credential["id"]
 
-    # 7. Admin Approves License Credentials
-    admin_headers = headers_prov1  # Under MVP, any logged-in user is accepted in admin verify stub
+    # 7. Admin Approves License Credentials (promote the seeker to admin for this check)
+    seeker_me = await client.get("/api/v1/identity/me", headers=headers_seeker)
+    seeker_id = seeker_me.json()["id"]
+    seeker_result = await db_session.execute(select(User).where(User.id == UUID(seeker_id)))
+    admin_user = seeker_result.scalars().first()
+    admin_user.is_admin = True
+    await db_session.commit()
+    admin_headers = headers_seeker
     verify_res = await client.post(
         f"/api/v1/seva/admin/credentials/{credential_id}/verify?admin_action=approved",
         headers=admin_headers

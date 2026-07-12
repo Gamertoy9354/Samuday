@@ -19,7 +19,15 @@ class User(Base):
     avatar_url = Column(String, nullable=True)
     google_id = Column(String, unique=True, index=True, nullable=True)
     is_seller = Column(Boolean, default=False, nullable=False)
+    is_admin = Column(Boolean, default=False, nullable=False)
+    # Seller tier: "official" (registered business, GSTIN/PAN, admin-reviewed) or
+    # "local" (small/informal seller, verified via personal ID KYC document review).
+    seller_tier = Column(String, nullable=True)
+    seller_verification_status = Column(String, default="unverified", nullable=False)  # unverified, pending, approved, rejected
     profile_bio = Column(String, nullable=True)
+    gender = Column(String, nullable=True)
+    date_of_birth = Column(String, nullable=True)  # ISO date string (YYYY-MM-DD)
+    alternate_phone = Column(String, nullable=True)  # secondary contact number, not used for login
     preferred_language = Column(String, default="en", nullable=False)
     status = Column(String, default="active", nullable=False)  # active, suspended
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
@@ -37,6 +45,7 @@ class KYCRecord(Base):
     id_type = Column(String, nullable=False)  # aadhaar, pan, voter_id
     document_url = Column(String, nullable=False)  # encrypted document key reference
     verification_status = Column(String, default="pending", nullable=False)  # pending, approved, rejected
+    rejection_reason = Column(String, nullable=True)
     verified_at = Column(DateTime(timezone=True), nullable=True)
     verified_by = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

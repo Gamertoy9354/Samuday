@@ -25,7 +25,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onClose }) => {
     setError('');
     try {
       const data = await authAPI.googleLogin(response.credential);
-      await login(data.access_token);
+      await login(data.access_token, data.refresh_token);
       onClose();
     } catch (e: any) {
       setError(e.message || 'Google login failed');
@@ -57,7 +57,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onClose }) => {
     try {
       const formatted = phone.startsWith('+') ? phone : `+91${phone}`;
       const data = await authAPI.verifyOTP(formatted, otp);
-      await login(data.access_token);
+      await login(data.access_token, data.refresh_token);
       onClose();
     } catch (e: any) {
       const detail = e.message;
@@ -82,7 +82,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onClose }) => {
       const otpRes = await authAPI.requestOTP(formatted).catch(() => null);
       const otpCode = otpRes?.mock_otp || otp;
       const data = await authAPI.register(formatted, otpCode, name, 'en');
-      await login(data.access_token);
+      await login(data.access_token, data.refresh_token);
       onClose();
     } catch (e: any) {
       setError(e.message || 'Registration failed');
