@@ -122,8 +122,8 @@ services:
     envVars:
       - key: VITE_GOOGLE_CLIENT_ID
         sync: false
+      # fromService only exposes connectionString/host/hostport/port for referenced
+      # services, not a full URL — hardcoded here to match BACKEND_URL above. If you
+      # rename the backend service, update both this and BACKEND_URL to match.
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: samuday-backend
-          property: url
+        value: https://samuday-backend.onrender.com
