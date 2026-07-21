@@ -107,7 +107,8 @@ services:
   # -------------------------------------------------------------
   # 3. React Vite Frontend Static Site
   # -------------------------------------------------------------
-  - type: static
+  - type: web
+    runtime: static
     name: samuday-frontend
     rootDir: samuday-frontend
     buildCommand: npm install && npm run build
