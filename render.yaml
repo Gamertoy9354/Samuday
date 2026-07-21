@@ -70,6 +70,14 @@ services:
       - key: GEMINI_API_KEY
         sync: false
 
+      # --- Cloudflare Workers AI (optional) — free image-editing fallback used only
+      # when Gemini image editing is unavailable. App runs fine without these, the
+      # fallback just silently no-ops — but set them to keep it working in prod. ---
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
+
       # --- Supabase Storage (uploaded/AI-generated images) ---
       - key: SUPABASE_URL
         value: https://sgflswivzutynuzsrafi.supabase.co
