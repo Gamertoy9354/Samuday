@@ -171,7 +171,7 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
     try {
       const res = await aiAPI.generateImages(primaryImage, title || 'Product', 'general');
       setImageVariants(res.generated_variants || []);
-      setAiNotice('📸 AI generated 3 high-quality variant showcase photos!');
+      setAiNotice('📸 AI generated 2 high-quality variant showcase photos!');
     } catch (e: any) {
       setError(e.message || 'Image generation failed');
     }

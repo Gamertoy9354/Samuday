@@ -62,7 +62,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
 @router.post("/generate-images")
 async def generate_images(req: GenerateImagesRequest, current_user = Depends(get_current_user)):
     """
-    Generates 3 additional high-resolution AI variant showcase photos from 1 primary image.
+    Generates 2 additional high-resolution AI variant showcase photos from 1 primary image.
     """
     variants = await ai_service.generate_ai_variant_images(
         primary_image_url=req.primary_image_url,

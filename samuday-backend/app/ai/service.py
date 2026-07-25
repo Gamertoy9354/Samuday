@@ -348,15 +348,18 @@ async def _gemini_edit_image(source_bytes: bytes, source_mime: str, prompt: str)
 
 async def _cloudflare_edit_image(source_bytes: bytes, source_mime: str, prompt: str) -> Optional[bytes]:
     """
-    Free image-to-image fallback via Cloudflare Workers AI's flux-2-klein-4b model, which
+    Free image-to-image fallback via Cloudflare Workers AI's flux-2-klein-9b model, which
     unifies generation and editing in one model. Takes the source image bytes directly
-    (multipart upload — no public URL needed). Free tier: 10,000 Neurons/day, no card required.
+    (multipart upload — no public URL needed). Note: 9b is much more expensive in Neurons
+    than the 4b variant (~1,300+ Neurons per 1024x1024 edit vs. low double-digits), so the
+    10,000 Neurons/day free tier covers roughly 6-7 edits/day platform-wide before erroring —
+    acceptable here since this only fires when Gemini's own free tier is unavailable.
     """
     account_id = settings.CLOUDFLARE_ACCOUNT_ID
     api_token = settings.CLOUDFLARE_API_TOKEN
     if not account_id or not api_token:
         return None
-    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/black-forest-labs/flux-2-klein-4b"
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/black-forest-labs/flux-2-klein-9b"
     headers = {"Authorization": f"Bearer {api_token}"}
     files = {"input_image_0": ("source.jpg", source_bytes, source_mime or "image/jpeg")}
     data = {"prompt": prompt}
@@ -442,24 +445,24 @@ async def generate_ad_creative(listing_title: str, listing_description: str, pri
 
 async def generate_ai_variant_images(primary_image_url: str, title: str, category: str = "general") -> List[str]:
     """
-    Generates 3 additional high-quality AI variant product showcase photos from the primary image.
-    Uses Gemini 2.5 Flash Image ("Nano Banana") to edit the seller's actual uploaded photo into
-    professional showcase variants — it's available on the Gemini API free tier (500 req/day),
-    unlike the Imagen predict endpoint, which requires a paid plan. Falls back to Cloudflare
-    Workers AI per-image if Gemini is unavailable, then to local Pillow-based variants, then
-    themed stock photos, if neither AI provider comes through.
+    Generates 2 additional high-quality AI variant product showcase photos from the primary image
+    (i.e. 2 new photos, not counting the seller's original). Uses Gemini 2.5 Flash Image
+    ("Nano Banana") to edit the seller's actual uploaded photo into professional showcase
+    variants — it's available on the Gemini API free tier (500 req/day), unlike the Imagen
+    predict endpoint, which requires a paid plan. Falls back to Cloudflare Workers AI per-image
+    if Gemini is unavailable, then to local Pillow-based variants, then themed stock photos,
+    if neither AI provider comes through.
     """
     import uuid
     from app.core.storage import upload_bytes
     logger.info(f"Generating AI variant images for '{title}' (Category: {category})")
 
+    VARIANT_COUNT = 2
     prompts = [
         f"Edit this product photo of '{title}' into a professional e-commerce studio shot: clean pure-white background, "
         f"soft even studio lighting, sharp focus, centered composition. Keep the product itself unchanged.",
         f"Edit this product photo of '{title}' into a vibrant lifestyle shot: place it in a realistic, warmly-lit "
         f"in-use context that suits the product, high resolution. Keep the product itself recognizable and unchanged.",
-        f"Edit this product photo of '{title}' into a detailed macro close-up that highlights its material and build "
-        f"quality, shallow depth of field, premium editorial look. Keep the product itself unchanged."
     ]
 
     generated_urls = []
@@ -477,28 +480,28 @@ async def generate_ai_variant_images(primary_image_url: str, title: str, categor
                     logger.error(f"Failed to upload AI variant image to storage: {e}")
 
     # Fallback to local image variations if neither AI provider comes through
-    if len(generated_urls) < 3:
+    if len(generated_urls) < VARIANT_COUNT:
         logger.info("Falling back to generating local visual variations of the primary image...")
         try:
             local_vars = await generate_local_pil_variants(primary_image_url)
-            generated_urls.extend(local_vars)
+            generated_urls.extend(local_vars[:VARIANT_COUNT - len(generated_urls)])
         except Exception as e:
             logger.error(f"Local PIL variant generation fallback failed: {e}")
 
     # Fallback to Unsplash theme pools only if local PIL generation yields nothing
-    if len(generated_urls) < 3:
+    if len(generated_urls) < VARIANT_COUNT:
         logger.info("Falling back to themed local pools for variant photos...")
         cat_key = category.lower().split('/')[0].split('&')[0].strip()
         if cat_key not in THEMED_IMAGE_SETS:
             cat_key = "general"
         theme_pool = THEMED_IMAGE_SETS[cat_key]
         for img in theme_pool:
-            if img != primary_image_url and len(generated_urls) < 3:
+            if img != primary_image_url and len(generated_urls) < VARIANT_COUNT:
                 generated_urls.append(img)
-        while len(generated_urls) < 3:
+        while len(generated_urls) < VARIANT_COUNT:
             generated_urls.append(random.choice(THEMED_IMAGE_SETS["general"]))
 
-    return generated_urls
+    return generated_urls[:VARIANT_COUNT]
 
 async def translate_message(content: str, source_lang: str, target_lang: str) -> str:
     """
