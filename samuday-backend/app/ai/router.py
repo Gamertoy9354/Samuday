@@ -17,6 +17,14 @@ class GenerateImagesRequest(BaseModel):
     primary_image_url: str
     title: str
     category: Optional[str] = "general"
+    description: Optional[str] = None
+
+class RegenerateImageRequest(BaseModel):
+    primary_image_url: str
+    title: str
+    style: str
+    category: Optional[str] = "general"
+    description: Optional[str] = None
 
 class GenerateListingRequest(BaseModel):
     short_summary: str
@@ -62,14 +70,34 @@ async def transcribe_audio(file: UploadFile = File(...)):
 @router.post("/generate-images")
 async def generate_images(req: GenerateImagesRequest, current_user = Depends(get_current_user)):
     """
-    Generates 2 additional high-resolution AI variant showcase photos from 1 primary image.
+    Generates 2 additional high-resolution AI variant showcase photos from 1 primary image,
+    art-directed by category and grounded in the listing's own description.
     """
     variants = await ai_service.generate_ai_variant_images(
         primary_image_url=req.primary_image_url,
         title=req.title,
-        category=req.category or "general"
+        category=req.category or "general",
+        description=req.description or ""
     )
     return {"primary_image": req.primary_image_url, "generated_variants": variants}
+
+
+@router.post("/regenerate-image")
+async def regenerate_image(req: RegenerateImageRequest, current_user = Depends(get_current_user)):
+    """
+    Regenerates a single AI variant photo (style: "studio" or "lifestyle") without discarding
+    any other photos the seller is keeping.
+    """
+    url = await ai_service.regenerate_variant_image(
+        primary_image_url=req.primary_image_url,
+        title=req.title,
+        style=req.style,
+        category=req.category or "general",
+        description=req.description or ""
+    )
+    if not url:
+        raise HTTPException(status_code=502, detail="Image regeneration failed. Please try again.")
+    return {"url": url}
 
 
 @router.post("/generate-listing")

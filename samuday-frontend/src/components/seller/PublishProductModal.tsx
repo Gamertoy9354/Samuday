@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { marketAPI, aiAPI } from '../../api/client';
-import { Sparkles, Mic, Image as ImageIcon, CheckCircle, AlertCircle, X, Wand2, Package, Plus, Trash2 } from 'lucide-react';
+import { Sparkles, Mic, Image as ImageIcon, CheckCircle, AlertCircle, X, Wand2, Package, Plus, Trash2, RefreshCw, ZoomIn } from 'lucide-react';
+
+type ImageVariant = { url: string; style: 'studio' | 'lifestyle' };
 
 interface Props {
   isOpen: boolean;
@@ -22,9 +24,11 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
   const [quantity, setQuantity] = useState('100');
   const [description, setDescription] = useState('');
   const [primaryImage, setPrimaryImage] = useState('');
-  const [imageVariants, setImageVariants] = useState<string[]>([]);
+  const [imageVariants, setImageVariants] = useState<ImageVariant[]>([]);
   const [imageGenerating, setImageGenerating] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
+  const [viewingImage, setViewingImage] = useState<string | null>(null);
   const [weightGrams, setWeightGrams] = useState('500');
   const [offers, setOffers] = useState<string[]>([]);
   const [newOffer, setNewOffer] = useState('');
@@ -159,6 +163,9 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
     setAiGenerating(false);
   };
 
+  const selectedCategoryName = () => categories.find((c: any) => c.id === categoryId)?.name || 'general';
+  const VARIANT_STYLES: Array<'studio' | 'lifestyle'> = ['studio', 'lifestyle'];
+
   // AI Multi-Image Generation from single image
   const handleAiGenerateImages = async () => {
     if (!primaryImage) {
@@ -169,14 +176,37 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
     setImageGenerating(true);
     setError('');
     try {
-      const res = await aiAPI.generateImages(primaryImage, title || 'Product', 'general');
-      setImageVariants(res.generated_variants || []);
+      const res = await aiAPI.generateImages(primaryImage, title || 'Product', selectedCategoryName(), description);
+      const urls: string[] = res.generated_variants || [];
+      setImageVariants(urls.map((url, i) => ({ url, style: VARIANT_STYLES[i] || 'studio' })));
       setAiNotice('📸 AI generated 2 high-quality variant showcase photos!');
     } catch (e: any) {
       setError(e.message || 'Image generation failed');
     }
     setImageGenerating(false);
   };
+
+  // Reroll a single AI variant photo without discarding the others
+  const handleRegenerateVariant = async (index: number) => {
+    const variant = imageVariants[index];
+    if (!primaryImage || !variant) return;
+
+    setRegeneratingIndex(index);
+    setError('');
+    try {
+      const res = await aiAPI.regenerateImage(primaryImage, title || 'Product', variant.style, selectedCategoryName(), description);
+      if (res.url) {
+        setImageVariants(prev => prev.map((v, i) => (i === index ? { ...v, url: res.url } : v)));
+        setAiNotice('🔄 Regenerated that photo!');
+      }
+    } catch (e: any) {
+      setError(e.message || 'Regeneration failed');
+    }
+    setRegeneratingIndex(null);
+  };
+
+  const handleRemovePrimaryImage = () => setPrimaryImage('');
+  const handleRemoveVariant = (index: number) => setImageVariants(prev => prev.filter((_, i) => i !== index));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -200,7 +230,7 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
         mediaUrls.push(primaryImage);
       }
       imageVariants.forEach((v) => {
-        if (v) mediaUrls.push(v);
+        if (v?.url) mediaUrls.push(v.url);
       });
 
       await marketAPI.createListing({
@@ -395,25 +425,73 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
                 disabled={imageGenerating || !primaryImage || uploadingImage}
                 style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6 }}
               >
-                <Sparkles size={16} /> {imageGenerating ? 'Generating...' : 'AI Generate 3 Variant Photos'}
+                <Sparkles size={16} /> {imageGenerating ? 'Generating...' : 'AI Generate 2 Variant Photos'}
               </button>
             </div>
 
             {/* Gallery Preview */}
-            <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingTop: 4 }}>
+            <div style={{ display: 'flex', gap: 14, overflowX: 'auto', paddingTop: 4, paddingBottom: 4 }}>
               {primaryImage && (
-                <div style={{ position: 'relative' }}>
-                  <img src={primaryImage} alt="Primary" style={{ width: 80, height: 80, objectFit: 'cover', borderRadius: 6, border: '2px solid var(--primary)' }} />
+                <div style={{ position: 'relative', flexShrink: 0 }}>
+                  <img
+                    src={primaryImage}
+                    alt="Primary"
+                    onClick={() => setViewingImage(primaryImage)}
+                    style={{ width: 84, height: 84, objectFit: 'cover', borderRadius: 6, border: '2px solid var(--primary)', cursor: 'zoom-in' }}
+                  />
                   <span style={{ position: 'absolute', bottom: 4, left: 4, background: 'var(--primary)', color: '#fff', fontSize: '0.65rem', padding: '1px 4px', borderRadius: 3 }}>Main</span>
+                  <button
+                    type="button"
+                    onClick={handleRemovePrimaryImage}
+                    title="Remove image"
+                    style={{ position: 'absolute', top: -7, right: -7, width: 20, height: 20, borderRadius: '50%', background: 'var(--danger)', color: '#fff', border: '2px solid var(--bg-white)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0 }}
+                  >
+                    <X size={12} />
+                  </button>
                 </div>
               )}
-              {imageVariants.map((url, i) => (
-                <div key={i} style={{ position: 'relative' }}>
-                  <img src={url} alt={`AI Variant ${i+1}`} style={{ width: 80, height: 80, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border-card)' }} />
-                  <span style={{ position: 'absolute', bottom: 4, left: 4, background: 'var(--accent)', color: '#fff', fontSize: '0.65rem', padding: '1px 4px', borderRadius: 3 }}>AI #{i+1}</span>
+              {imageVariants.map((variant, i) => (
+                <div key={i} style={{ position: 'relative', flexShrink: 0 }}>
+                  <img
+                    src={variant.url}
+                    alt={`AI Variant ${i + 1}`}
+                    onClick={() => setViewingImage(variant.url)}
+                    style={{ width: 84, height: 84, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border-card)', cursor: 'zoom-in', opacity: regeneratingIndex === i ? 0.4 : 1, transition: 'opacity 0.2s' }}
+                  />
+                  <span style={{ position: 'absolute', bottom: 4, left: 4, background: 'var(--accent)', color: '#fff', fontSize: '0.65rem', padding: '1px 4px', borderRadius: 3 }}>
+                    AI · {variant.style === 'studio' ? 'Studio' : 'Lifestyle'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setViewingImage(variant.url)}
+                    title="View full image"
+                    style={{ position: 'absolute', top: -7, left: -7, width: 20, height: 20, borderRadius: '50%', background: 'var(--bg-white)', color: 'var(--text-primary)', border: '1px solid var(--border-card)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0 }}
+                  >
+                    <ZoomIn size={11} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveVariant(i)}
+                    title="Remove image"
+                    style={{ position: 'absolute', top: -7, right: -7, width: 20, height: 20, borderRadius: '50%', background: 'var(--danger)', color: '#fff', border: '2px solid var(--bg-white)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0 }}
+                  >
+                    <X size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRegenerateVariant(i)}
+                    disabled={regeneratingIndex !== null || !primaryImage}
+                    title="Regenerate this photo"
+                    style={{ position: 'absolute', bottom: -7, right: -7, width: 22, height: 22, borderRadius: '50%', background: 'var(--bg-white)', color: 'var(--primary)', border: '1px solid var(--border-card)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: regeneratingIndex !== null ? 'default' : 'pointer', padding: 0 }}
+                  >
+                    <RefreshCw size={12} className={regeneratingIndex === i ? 'animate-pulse' : ''} />
+                  </button>
                 </div>
               ))}
             </div>
+            {(primaryImage || imageVariants.length > 0) && (
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Click any photo to view it full-size. Use ↻ to regenerate an AI photo, or ✕ to remove one.</span>
+            )}
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
@@ -423,6 +501,27 @@ export const PublishProductModal: React.FC<Props> = ({ isOpen, onClose, onSucces
             </button>
           </div>
         </form>
+
+        {viewingImage && (
+          <div
+            onClick={() => setViewingImage(null)}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 1300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+          >
+            <button
+              type="button"
+              onClick={() => setViewingImage(null)}
+              style={{ position: 'absolute', top: 20, right: 20, background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+            >
+              <X size={20} />
+            </button>
+            <img
+              src={viewingImage}
+              alt="Full view"
+              onClick={e => e.stopPropagation()}
+              style={{ maxWidth: '92vw', maxHeight: '92vh', objectFit: 'contain', borderRadius: 8 }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

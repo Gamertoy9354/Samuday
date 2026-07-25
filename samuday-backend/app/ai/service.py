@@ -443,27 +443,109 @@ async def generate_ad_creative(listing_title: str, listing_description: str, pri
     return {"headline": headline, "image_url": ad_image_url}
 
 
-async def generate_ai_variant_images(primary_image_url: str, title: str, category: str = "general") -> List[str]:
+# Per-category art direction for AI product photography — keeps generated shots relevant to
+# what's actually being sold instead of one generic "studio + lifestyle" look for everything.
+# Keys are lowercased to match the category strings produced by generate_full_seo_listing.
+CATEGORY_PHOTO_STYLES = {
+    "agriculture": {
+        "studio": "a clean rustic backdrop with woven jute or wooden crate textures and soft natural window light, conveying farm-fresh authenticity",
+        "lifestyle": "an open farmland or sunlit market-stall setting at golden hour, showing the product in its natural harvest or delivery context",
+    },
+    "retail/fmcg": {
+        "studio": "a bright, crisp studio backdrop with even lighting that makes the packaging colors and label detail pop, like a premium shelf display",
+        "lifestyle": "a warm, everyday Indian kitchen or pantry countertop setting with natural light, showing the product as it would actually sit at home",
+    },
+    "fashion": {
+        "studio": "a professional fashion-editorial studio shot on a seamless backdrop with directional softbox lighting that flatters fabric texture and drape",
+        "lifestyle": "a candid outdoor or urban setting in natural light, styled as if worn or carried in a real fashion lookbook",
+    },
+    "electronics": {
+        "studio": "a sleek, minimalist tech-studio shot on a dark gradient backdrop with crisp reflections and dramatic rim lighting that highlights build quality",
+        "lifestyle": "a modern desk or living-space setting with soft ambient light, showing the product naturally in everyday use",
+    },
+    "home/construction": {
+        "studio": "a bright, minimal interior-design studio setting with soft diffused light that highlights material, finish, and craftsmanship",
+        "lifestyle": "a tastefully furnished, well-lit real home interior showing the product installed or in use in its intended space",
+    },
+    "automobiles": {
+        "studio": "a glossy showroom-style backdrop with dramatic angled lighting and reflections that highlight contours and finish",
+        "lifestyle": "an open-road or urban street setting at golden hour, showing the product in a real-world riding or driving context",
+    },
+    "health": {
+        "studio": "a clean, bright, clinical-feel studio backdrop with soft even lighting that conveys purity, hygiene, and trustworthiness",
+        "lifestyle": "a calm everyday wellness setting — like a morning routine, gym, or yoga mat — in natural light",
+    },
+    "industrial/b2b": {
+        "studio": "a precise, well-lit industrial studio backdrop in neutral tones that emphasizes build quality, materials, and engineering precision",
+        "lifestyle": "a real worksite or warehouse setting with practical lighting, showing the product in its working environment",
+    },
+    "general": {
+        "studio": "a clean pure-white e-commerce studio background with soft even lighting, sharp focus, and centered composition",
+        "lifestyle": "a realistic, warmly-lit in-use context suited to the product, high resolution and true to life",
+    },
+}
+
+
+def _photo_style_for_category(category: str) -> Dict[str, str]:
+    key = (category or "general").lower().strip()
+    if key in CATEGORY_PHOTO_STYLES:
+        return CATEGORY_PHOTO_STYLES[key]
+    key2 = key.split('/')[0].split('&')[0].strip()
+    for k, v in CATEGORY_PHOTO_STYLES.items():
+        if key2 and (key2 in k or k in key2):
+            return v
+    return CATEGORY_PHOTO_STYLES["general"]
+
+
+def _clean_description_snippet(description: Optional[str], max_len: int = 220) -> str:
+    d = (description or "").strip()
+    if not d:
+        return ""
+    d = re.sub(r'[#*_`>]', '', d)
+    d = re.sub(r'\s+', ' ', d).strip()
+    return d[:max_len]
+
+
+def _build_variant_prompt(style_key: str, title: str, category: str, description: str, fresh: bool = False) -> str:
+    photo_style = _photo_style_for_category(category)
+    context = _clean_description_snippet(description)
+    context_line = f" Real product details for accuracy: {context}." if context else ""
+    fresh_line = " Create a fresh new variation, different in framing and detail from any previous attempt." if fresh else ""
+    if style_key == "lifestyle":
+        return (
+            f"Edit this product photo of '{title}' into a vibrant lifestyle showcase shot: "
+            f"{photo_style['lifestyle']}.{context_line}{fresh_line} Keep the product itself fully "
+            f"recognizable, accurate, and unchanged."
+        )
+    return (
+        f"Edit this product photo of '{title}' into a professional e-commerce studio shot: "
+        f"{photo_style['studio']}.{context_line}{fresh_line} Keep the product itself — its exact "
+        f"shape, colors, materials, and details — completely unchanged; only change the background, "
+        f"lighting, and composition."
+    )
+
+
+VARIANT_STYLES = ["studio", "lifestyle"]
+
+
+async def generate_ai_variant_images(primary_image_url: str, title: str, category: str = "general", description: str = "") -> List[str]:
     """
     Generates 2 additional high-quality AI variant product showcase photos from the primary image
-    (i.e. 2 new photos, not counting the seller's original). Uses Gemini 2.5 Flash Image
-    ("Nano Banana") to edit the seller's actual uploaded photo into professional showcase
-    variants — it's available on the Gemini API free tier (500 req/day), unlike the Imagen
-    predict endpoint, which requires a paid plan. Falls back to Cloudflare Workers AI per-image
-    if Gemini is unavailable, then to local Pillow-based variants, then themed stock photos,
-    if neither AI provider comes through.
+    (i.e. 2 new photos, not counting the seller's original). Prompts are tailored to the listing's
+    actual category (distinct studio/lifestyle art direction per category) and grounded in the real
+    product description, so edits stay relevant to what's actually being sold instead of generic
+    stock-photo filler. Uses Gemini 2.5 Flash Image ("Nano Banana") to edit the seller's actual
+    uploaded photo into professional showcase variants — it's available on the Gemini API free tier
+    (500 req/day), unlike the Imagen predict endpoint, which requires a paid plan. Falls back to
+    Cloudflare Workers AI per-image if Gemini is unavailable, then to local Pillow-based variants,
+    then themed stock photos, if neither AI provider comes through.
     """
     import uuid
     from app.core.storage import upload_bytes
     logger.info(f"Generating AI variant images for '{title}' (Category: {category})")
 
     VARIANT_COUNT = 2
-    prompts = [
-        f"Edit this product photo of '{title}' into a professional e-commerce studio shot: clean pure-white background, "
-        f"soft even studio lighting, sharp focus, centered composition. Keep the product itself unchanged.",
-        f"Edit this product photo of '{title}' into a vibrant lifestyle shot: place it in a realistic, warmly-lit "
-        f"in-use context that suits the product, high resolution. Keep the product itself recognizable and unchanged.",
-    ]
+    prompts = [_build_variant_prompt(style, title, category, description) for style in VARIANT_STYLES]
 
     generated_urls = []
     source = await _load_image_bytes(primary_image_url)
@@ -502,6 +584,42 @@ async def generate_ai_variant_images(primary_image_url: str, title: str, categor
             generated_urls.append(random.choice(THEMED_IMAGE_SETS["general"]))
 
     return generated_urls[:VARIANT_COUNT]
+
+
+async def regenerate_variant_image(primary_image_url: str, title: str, style: str, category: str = "general", description: str = "") -> Optional[str]:
+    """
+    Regenerates a single AI variant photo (style: "studio" or "lifestyle") without touching any
+    other photos the seller is keeping — backs the per-image "Regenerate" button in the publish
+    modal, as opposed to generate_ai_variant_images which rerolls the whole set.
+    """
+    import uuid
+    from app.core.storage import upload_bytes
+
+    style_key = style if style in VARIANT_STYLES else "studio"
+    prompt = _build_variant_prompt(style_key, title, category, description, fresh=True)
+
+    source = await _load_image_bytes(primary_image_url)
+    if not source:
+        return None
+    source_bytes, source_mime = source
+
+    edited_bytes = await _edit_image_with_fallback(source_bytes, source_mime, prompt)
+    if edited_bytes:
+        filename = f"gen_{uuid.uuid4().hex}.jpg"
+        try:
+            return await upload_bytes(edited_bytes, filename, "image/jpeg")
+        except Exception as e:
+            logger.error(f"Failed to upload regenerated AI image to storage: {e}")
+            return None
+
+    # Neither AI provider came through — fall back to one local Pillow variation so the
+    # button never dead-ends with nothing.
+    try:
+        local_vars = await generate_local_pil_variants(primary_image_url)
+        return local_vars[0] if local_vars else None
+    except Exception as e:
+        logger.error(f"Local PIL fallback for regenerate failed: {e}")
+        return None
 
 async def translate_message(content: str, source_lang: str, target_lang: str) -> str:
     """
@@ -599,6 +717,8 @@ RULES:
    If no price is mentioned, estimate a fair Indian market price for the product.
 
 5. WEIGHT: Estimate the shipping weight of ONE unit of the product in grams (integer), including reasonable packaging. Use real-world knowledge (e.g. earbuds ~150g, a ceiling fan ~2500g, a 25kg rice bag ~25500g, a smartphone ~250g). This is used for courier rate calculation, so it matters — never omit it.
+
+6. PERSONALIZATION: Extract and prominently feature every concrete, specific detail the seller actually mentioned — brand name, model/variant, exact color, size, material, quantity, origin/location, condition (new/used), or any unique selling point (e.g. handmade, organic, limited stock, a specific warranty period). Never swap a specific detail the seller gave for a vaguer generic one, and never let a detail they mentioned get dropped in the rewrite. Treat anything distinctive the seller said as a headline feature, not a footnote. Do NOT invent brand names, certifications, specs, or claims the seller never mentioned — only elevate and organize what's actually there.
 
 EXAMPLES:
 

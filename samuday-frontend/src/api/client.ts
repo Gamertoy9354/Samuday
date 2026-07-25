@@ -313,8 +313,11 @@ export const aiAPI = {
     return apiUpload('/ai/transcribe', fd);
   },
 
-  generateImages: (primaryImageUrl: string, title: string, category?: string) =>
-    apiFetch('/ai/generate-images', { method: 'POST', body: JSON.stringify({ primary_image_url: primaryImageUrl, title, category }) }),
+  generateImages: (primaryImageUrl: string, title: string, category?: string, description?: string) =>
+    apiFetch('/ai/generate-images', { method: 'POST', body: JSON.stringify({ primary_image_url: primaryImageUrl, title, category, description }) }),
+
+  regenerateImage: (primaryImageUrl: string, title: string, style: 'studio' | 'lifestyle', category?: string, description?: string) =>
+    apiFetch('/ai/regenerate-image', { method: 'POST', body: JSON.stringify({ primary_image_url: primaryImageUrl, title, style, category, description }) }),
 
   generateListing: (shortSummary: string, audioUrl?: string, language: string = 'en') =>
     apiFetch('/ai/generate-listing', { method: 'POST', body: JSON.stringify({ short_summary: shortSummary, audio_url: audioUrl, language }) }),
