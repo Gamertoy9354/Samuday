@@ -197,6 +197,11 @@ export const AdminDashboard: React.FC = () => {
                       GSTIN: {p.gstin} {p.pan && `· PAN: ${p.pan}`} {p.business_phone && `· ${p.business_phone}`}
                     </div>
                     {p.business_address && <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{p.business_address} - {p.pincode}</div>}
+                    {p.gst_certificate_url && (
+                      <a href={p.gst_certificate_url} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem', color: 'var(--primary)', display: 'inline-block', marginTop: 6 }}>
+                        View GST Certificate
+                      </a>
+                    )}
                     <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                       <button className="btn btn-primary btn-sm" onClick={() => handleApproveOfficial(p.id)} disabled={actingId === p.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <CheckCircle2 size={14} /> Approve
@@ -235,6 +240,14 @@ export const AdminDashboard: React.FC = () => {
                       <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
                         {k.id_type.toUpperCase()} {k.applicant_phone && `· ${k.applicant_phone}`}
                       </div>
+                      {k.gstin && (
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          GSTIN: {k.gstin}
+                          {k.gst_certificate_url && (
+                            <> · <a href={k.gst_certificate_url} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>View GST Certificate</a></>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div style={{ display: 'flex', gap: 8 }}>
                       <button className="btn btn-primary btn-sm" onClick={() => handleApproveLocal(k.id)} disabled={actingId === k.id}>Approve</button>

@@ -114,8 +114,10 @@ async def submit_kyc_endpoint(
     db: AsyncSession = Depends(get_db)
 ):
     """Submits KYC document links to the trust queue."""
-    record = await service.submit_kyc(db, current_user.id, payload)
-    return record
+    try:
+        return await service.submit_kyc(db, current_user.id, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.get("/admin/kyc/pending", response_model=List[KYCDetailResponse])
 async def list_pending_kyc_endpoint(

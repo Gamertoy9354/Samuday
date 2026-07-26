@@ -6,6 +6,7 @@ from typing import Optional
 class SupplierProfileCreate(BaseModel):
     business_name: str = Field(..., min_length=2, max_length=150)
     gstin: str = Field(..., min_length=15, max_length=15, description="15-character GST Registration Number")
+    gst_certificate_url: str = Field(..., description="URL of the uploaded GST registration certificate")
     pan: Optional[str] = Field(None, min_length=10, max_length=10)
     business_phone: Optional[str] = Field(None, min_length=10, max_length=15)
     business_address: Optional[str] = None
@@ -16,6 +17,7 @@ class SupplierProfileResponse(BaseModel):
     user_id: UUID
     business_name: str
     gstin: str
+    gst_certificate_url: Optional[str] = None
     pan: Optional[str] = None
     business_phone: Optional[str] = None
     business_address: Optional[str] = None

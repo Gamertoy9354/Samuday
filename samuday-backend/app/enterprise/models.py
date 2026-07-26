@@ -13,6 +13,9 @@ class SupplierProfile(Base):
     user_id = Column(UUID(as_uuid=True), unique=True, nullable=False, index=True)
     business_name = Column(String, nullable=False)
     gstin = Column(String, nullable=False)  # GST identification number
+    # Nullable at the DB level (existing rows predate this field); required for new
+    # submissions via SupplierProfileCreate.gst_certificate_url.
+    gst_certificate_url = Column(String, nullable=True)
     pan = Column(String, nullable=True)
     business_phone = Column(String, nullable=True)
     business_address = Column(String, nullable=True)

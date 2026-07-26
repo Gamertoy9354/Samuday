@@ -303,11 +303,21 @@ async def submit_kyc(db: AsyncSession, user_id: UUID, kyc_in: KYCSubmission) -> 
     tier seller, this document review IS their business verification — DigiLocker
     e-KYC would replace this later, but requires India's DigiLocker Partner
     Program approval, which this project doesn't have yet.
+
+    When purpose == "seller_verification" (local-tier seller onboarding, as opposed
+    to a plain identity check e.g. for Kutumb), a GSTIN and GST certificate are
+    required — every seller on the platform, local or official, must prove GST
+    registration.
     """
+    if kyc_in.purpose == "seller_verification" and (not kyc_in.gstin or not kyc_in.gst_certificate_url):
+        raise ValueError("GSTIN and a GST registration certificate are required to verify a local business seller account.")
+
     record = KYCRecord(
         user_id=user_id,
         id_type=kyc_in.id_type,
         document_url=kyc_in.document_url,  # secure ref
+        gstin=kyc_in.gstin,
+        gst_certificate_url=kyc_in.gst_certificate_url,
         verification_status="pending"
     )
     db.add(record)
@@ -397,17 +407,28 @@ async def list_pending_kyc(db: AsyncSession) -> List[dict]:
         .order_by(KYCRecord.created_at.asc())
     )
     rows = result.all()
+
+    def _safe_decrypt_phone(phone: Optional[str]) -> Optional[str]:
+        if not phone:
+            return None
+        try:
+            return decrypt_pii(phone)
+        except Exception:
+            return None
+
     return [
         {
             "id": kyc.id,
             "user_id": kyc.user_id,
             "id_type": kyc.id_type,
             "document_url": kyc.document_url,
+            "gstin": kyc.gstin,
+            "gst_certificate_url": kyc.gst_certificate_url,
             "verification_status": kyc.verification_status,
             "rejection_reason": kyc.rejection_reason,
             "created_at": kyc.created_at,
             "applicant_name": user.full_name,
-            "applicant_phone": decrypt_pii(user.phone_number) if user.phone_number else None,
+            "applicant_phone": _safe_decrypt_phone(user.phone_number),
             "applicant_context": "Local Seller Application" if user.seller_tier == "local" else "Individual Verification",
         }
         for kyc, user in rows

@@ -110,6 +110,9 @@ class RefreshTokenRequest(BaseModel):
 class KYCSubmission(BaseModel):
     id_type: str = Field(..., description="aadhaar, pan, voter_id")
     document_url: str = Field(..., description="Secure document URL or storage key reference")
+    purpose: Optional[str] = Field(None, description="Set to 'seller_verification' when this submission is a local-tier seller's business verification — requires gstin + gst_certificate_url")
+    gstin: Optional[str] = Field(None, min_length=15, max_length=15, description="15-character GST Registration Number")
+    gst_certificate_url: Optional[str] = Field(None, description="URL of the uploaded GST registration certificate")
 
     @field_validator("id_type")
     @classmethod
@@ -123,6 +126,8 @@ class KYCResponse(BaseModel):
     user_id: UUID
     id_type: str
     document_url: str
+    gstin: Optional[str] = None
+    gst_certificate_url: Optional[str] = None
     verification_status: str
     rejection_reason: Optional[str] = None
     created_at: datetime

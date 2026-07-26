@@ -44,6 +44,11 @@ class KYCRecord(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("identity.users.id", ondelete="CASCADE"), nullable=False)
     id_type = Column(String, nullable=False)  # aadhaar, pan, voter_id
     document_url = Column(String, nullable=False)  # encrypted document key reference
+    # Required when this submission is a local-tier seller's business verification
+    # (KYCSubmission.purpose == "seller_verification") — nullable here since this table
+    # is shared with plain identity checks (e.g. Kutumb) that have no GSTIN to give.
+    gstin = Column(String, nullable=True)
+    gst_certificate_url = Column(String, nullable=True)
     verification_status = Column(String, default="pending", nullable=False)  # pending, approved, rejected
     rejection_reason = Column(String, nullable=True)
     verified_at = Column(DateTime(timezone=True), nullable=True)

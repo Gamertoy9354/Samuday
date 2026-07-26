@@ -11,6 +11,7 @@ export const SellerOnboarding: React.FC = () => {
   // Official tier form state
   const [businessName, setBusinessName] = useState('');
   const [gstin, setGstin] = useState('');
+  const [gstCertFile, setGstCertFile] = useState<File | null>(null);
   const [pan, setPan] = useState('');
   const [businessPhone, setBusinessPhone] = useState('');
   const [businessAddress, setBusinessAddress] = useState('');
@@ -19,6 +20,8 @@ export const SellerOnboarding: React.FC = () => {
   // Local tier form state
   const [idType, setIdType] = useState<'aadhaar' | 'pan' | 'voter_id'>('aadhaar');
   const [docFile, setDocFile] = useState<File | null>(null);
+  const [localGstin, setLocalGstin] = useState('');
+  const [localGstCertFile, setLocalGstCertFile] = useState<File | null>(null);
   const [uploadingDoc, setUploadingDoc] = useState(false);
 
   if (!user) return null;
@@ -41,12 +44,20 @@ export const SellerOnboarding: React.FC = () => {
       setError('Please enter a valid business name and 15-character GSTIN.');
       return;
     }
+    if (!gstCertFile) {
+      setError('Please upload a photo/scan of your GST registration certificate.');
+      return;
+    }
     setSubmitting(true);
     setError('');
     try {
+      setUploadingDoc(true);
+      const certRes = await marketAPI.uploadImage(gstCertFile);
+      setUploadingDoc(false);
       await verificationAPI.submitOfficialProfile({
         business_name: businessName,
         gstin,
+        gst_certificate_url: certRes.url,
         pan: pan || undefined,
         business_phone: businessPhone || undefined,
         business_address: businessAddress || undefined,
@@ -57,6 +68,7 @@ export const SellerOnboarding: React.FC = () => {
       setError(e.message || 'Failed to submit business verification');
     }
     setSubmitting(false);
+    setUploadingDoc(false);
   };
 
   const handleUploadDoc = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -71,13 +83,28 @@ export const SellerOnboarding: React.FC = () => {
       setError('Please upload a photo of your ID document.');
       return;
     }
+    if (localGstin.length !== 15) {
+      setError('Please enter a valid 15-character GSTIN.');
+      return;
+    }
+    if (!localGstCertFile) {
+      setError('Please upload a photo/scan of your GST registration certificate.');
+      return;
+    }
     setSubmitting(true);
     setError('');
     try {
       setUploadingDoc(true);
       const uploadRes = await marketAPI.uploadImage(docFile);
+      const certRes = await marketAPI.uploadImage(localGstCertFile);
       setUploadingDoc(false);
-      await verificationAPI.submitLocalKyc({ id_type: idType, document_url: uploadRes.url });
+      await verificationAPI.submitLocalKyc({
+        id_type: idType,
+        document_url: uploadRes.url,
+        purpose: 'seller_verification',
+        gstin: localGstin,
+        gst_certificate_url: certRes.url,
+      });
       await refreshUser();
     } catch (e: any) {
       setError(e.message || 'Failed to submit KYC document');
@@ -111,7 +138,7 @@ export const SellerOnboarding: React.FC = () => {
               <UserCheck size={36} color="var(--accent)" style={{ marginBottom: 12 }} />
               <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: 8 }}>Local Marketplace Seller</h3>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', marginBottom: 16, lineHeight: 1.6 }}>
-                For small/informal local sellers. Verify your identity with a simple ID document (Aadhaar/PAN/Voter ID) — no business registration required.
+                For small/informal local sellers. Verify your identity with a simple ID document (Aadhaar/PAN/Voter ID), plus your GSTIN and GST certificate.
               </p>
               <button className="btn btn-accent btn-block" onClick={() => handleChooseTier('local')} disabled={submitting}>
                 Register as Local Seller
@@ -162,12 +189,17 @@ export const SellerOnboarding: React.FC = () => {
             <form onSubmit={handleSubmitOfficial} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <div className="form-group"><label>Business Name *</label><input value={businessName} onChange={e => setBusinessName(e.target.value)} required /></div>
               <div className="form-group"><label>GSTIN * (15 characters)</label><input value={gstin} onChange={e => setGstin(e.target.value.toUpperCase())} maxLength={15} required /></div>
+              <div className="form-group">
+                <label>GST Registration Certificate * (photo/scan)</label>
+                <input type="file" accept="image/*" onChange={e => setGstCertFile(e.target.files?.[0] || null)} />
+                {gstCertFile && <span style={{ fontSize: '0.8rem', color: 'var(--success)', marginTop: 4, display: 'block' }}>Selected: {gstCertFile.name}</span>}
+              </div>
               <div className="form-group"><label>PAN</label><input value={pan} onChange={e => setPan(e.target.value.toUpperCase())} maxLength={10} /></div>
               <div className="form-group"><label>Business Phone</label><input value={businessPhone} onChange={e => setBusinessPhone(e.target.value)} /></div>
               <div className="form-group"><label>Business Address</label><textarea value={businessAddress} onChange={e => setBusinessAddress(e.target.value)} rows={2} /></div>
               <div className="form-group"><label>Pincode</label><input value={pincode} onChange={e => setPincode(e.target.value)} maxLength={6} /></div>
               <button type="submit" className="btn btn-primary btn-block" disabled={submitting}>
-                {submitting ? 'Submitting...' : 'Submit for Verification'}
+                {uploadingDoc ? 'Uploading...' : submitting ? 'Submitting...' : 'Submit for Verification'}
               </button>
             </form>
           </div>
@@ -177,7 +209,8 @@ export const SellerOnboarding: React.FC = () => {
               <UserCheck size={20} color="var(--accent)" /> Local Seller Identity Verification
             </h3>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: 20 }}>
-              Upload a clear photo of one government ID. Reviewed by our team, usually within 1-2 business days.
+              Upload a clear photo of one government ID, plus your GSTIN and GST certificate — every seller on Samuday,
+              local or official, must be a GST-registered business. Reviewed by our team, usually within 1-2 business days.
             </p>
             <form onSubmit={handleSubmitLocal} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <div className="form-group">
@@ -189,9 +222,18 @@ export const SellerOnboarding: React.FC = () => {
                 </select>
               </div>
               <div className="form-group">
-                <label>ID Document Photo</label>
+                <label>ID Document Photo *</label>
                 <input type="file" accept="image/*" onChange={handleUploadDoc} />
                 {docFile && <span style={{ fontSize: '0.8rem', color: 'var(--success)', marginTop: 4 }}>Selected: {docFile.name}</span>}
+              </div>
+              <div className="form-group">
+                <label>GSTIN * (15 characters)</label>
+                <input value={localGstin} onChange={e => setLocalGstin(e.target.value.toUpperCase())} maxLength={15} required />
+              </div>
+              <div className="form-group">
+                <label>GST Registration Certificate * (photo/scan)</label>
+                <input type="file" accept="image/*" onChange={e => setLocalGstCertFile(e.target.files?.[0] || null)} />
+                {localGstCertFile && <span style={{ fontSize: '0.8rem', color: 'var(--success)', marginTop: 4, display: 'block' }}>Selected: {localGstCertFile.name}</span>}
               </div>
               <button type="submit" className="btn btn-accent btn-block" disabled={submitting || uploadingDoc}>
                 <Upload size={16} style={{ marginRight: 6, verticalAlign: -3 }} />

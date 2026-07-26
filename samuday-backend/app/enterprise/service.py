@@ -26,6 +26,7 @@ async def create_supplier_profile(
         if existing.verification_status == "rejected":
             existing.business_name = profile_in.business_name
             existing.gstin = profile_in.gstin
+            existing.gst_certificate_url = profile_in.gst_certificate_url
             existing.pan = profile_in.pan
             existing.business_phone = profile_in.business_phone
             existing.business_address = profile_in.business_address
@@ -41,6 +42,7 @@ async def create_supplier_profile(
             user_id=user_id,
             business_name=profile_in.business_name,
             gstin=profile_in.gstin,
+            gst_certificate_url=profile_in.gst_certificate_url,
             pan=profile_in.pan,
             business_phone=profile_in.business_phone,
             business_address=profile_in.business_address,
