@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List
 
 class AddressCreate(BaseModel):
@@ -71,6 +71,28 @@ class ListingCreate(BaseModel):
     available_offers: List[str] = Field(default_factory=list)
     return_policy: Optional[str] = None
 
+class JobDetails(BaseModel):
+    job_type: str
+    salary_min: Optional[int] = None
+    salary_max: Optional[int] = None
+    salary_period: Optional[str] = None
+    experience_required: Optional[str] = None
+    openings: int = 1
+    application_deadline: Optional[datetime] = None
+    contact_email: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class AgriDetails(BaseModel):
+    crop_type: Optional[str] = None
+    is_organic: bool = False
+    harvest_date: Optional[date] = None
+    grade: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
 class ListingResponse(BaseModel):
     id: UUID
     seller_id: UUID
@@ -95,6 +117,8 @@ class ListingResponse(BaseModel):
     rating_avg: Optional[float] = None
     review_count: int = 0
     active_discount_percent: Optional[int] = None
+    job_details: Optional[JobDetails] = None
+    agri_details: Optional[AgriDetails] = None
 
     class Config:
         from_attributes = True
@@ -106,6 +130,43 @@ class ListingUpdate(BaseModel):
     quantity: Optional[int] = Field(None, ge=0)
     available_offers: Optional[List[str]] = None
     return_policy: Optional[str] = None
+
+class JobListingCreate(ListingCreate):
+    price: Optional[int] = Field(None, description="Unused for jobs — salary_min/salary_max drive pay display")
+    listing_type: str = "job"
+    quantity: int = Field(default=1, ge=1, description="Number of openings")
+    job_type: str = Field(..., description="full-time, part-time, contract, internship, gig")
+    salary_min: Optional[int] = Field(None, ge=0, description="Minimum salary in paise")
+    salary_max: Optional[int] = Field(None, ge=0, description="Maximum salary in paise")
+    salary_period: str = Field(default="monthly", description="monthly, yearly, hourly")
+    experience_required: Optional[str] = None
+    application_deadline: Optional[datetime] = None
+    contact_email: Optional[str] = None
+
+class AgriListingCreate(ListingCreate):
+    listing_type: str = "crop"
+    unit: str = Field(..., description="kg, quintal, ton, dozen, piece")
+    crop_type: Optional[str] = None
+    is_organic: bool = False
+    harvest_date: Optional[date] = None
+    grade: Optional[str] = Field(None, description="e.g. A / Premium, B / Standard, C / Economy")
+
+class JobApplicationCreate(BaseModel):
+    message: Optional[str] = Field(None, max_length=2000)
+
+class JobApplicationResponse(BaseModel):
+    id: UUID
+    listing_id: UUID
+    applicant_id: UUID
+    applicant_name: Optional[str] = None
+    applicant_phone: Optional[str] = None
+    listing_title: Optional[str] = None
+    message: Optional[str] = None
+    status: str
+    applied_at: datetime
+
+    class Config:
+        from_attributes = True
 
 class OrderCreate(BaseModel):
     listing_id: UUID

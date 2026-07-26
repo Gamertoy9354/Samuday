@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { promoAPI, marketAPI, aiAPI, shippingAPI, orderAPI } from '../api/client';
 import { PublishProductModal } from '../components/seller/PublishProductModal';
+import { PublishJobModal } from '../components/seller/PublishJobModal';
+import { PublishAgriModal } from '../components/seller/PublishAgriModal';
+import { JobApplicantsModal } from '../components/seller/JobApplicantsModal';
 import { SellerOnboarding } from '../components/seller/SellerOnboarding';
 import { EditListingModal } from '../components/seller/EditListingModal';
 import { renderFormattedText } from '../utils/textFormat';
@@ -20,6 +23,9 @@ export const SellerDashboard: React.FC = () => {
   const [mySales, setMySales] = useState<any[]>([]);
   const [myAds, setMyAds] = useState<any[]>([]);
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
+  const [isPublishJobModalOpen, setIsPublishJobModalOpen] = useState(false);
+  const [isPublishAgriModalOpen, setIsPublishAgriModalOpen] = useState(false);
+  const [applicantsFor, setApplicantsFor] = useState<{ id: string; title: string } | null>(null);
   const [editingListingId, setEditingListingId] = useState<string | null>(null);
   const [listingActionId, setListingActionId] = useState<string | null>(null);
 
@@ -458,11 +464,19 @@ export const SellerDashboard: React.FC = () => {
       {/* Tab 2: My Listings */}
       {tab === 'listings' && (
         <div style={{ background: 'var(--bg-white)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-card)', padding: 24 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Your Active Product Listings</h3>
-            <button className="btn btn-primary btn-sm" onClick={() => setIsPublishModalOpen(true)}>
-              + Add Product
-            </button>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+            <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Your Active Listings</h3>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-primary btn-sm" onClick={() => setIsPublishModalOpen(true)}>
+                + Add Product
+              </button>
+              <button className="btn btn-outline btn-sm" onClick={() => setIsPublishJobModalOpen(true)}>
+                + Post a Job
+              </button>
+              <button className="btn btn-outline btn-sm" onClick={() => setIsPublishAgriModalOpen(true)}>
+                + List Farm Produce
+              </button>
+            </div>
           </div>
 
           {listings.length === 0 ? (
@@ -495,11 +509,30 @@ export const SellerDashboard: React.FC = () => {
                     />
                     <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => setEditingListingId(l.id)} title="Click to view or edit this listing">
                       <div style={{ fontWeight: 600 }}>{l.title}</div>
-                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                        &#8377;{(l.price / 100).toLocaleString('en-IN')} · Stock: {l.quantity || 100} units · <span style={{ color: meta.color, fontWeight: 600 }}>{meta.label}</span>
-                      </div>
+                      {l.job_details ? (
+                        <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                          {l.job_details.salary_min || l.job_details.salary_max
+                            ? `₹${((l.job_details.salary_min || l.job_details.salary_max) / 100).toLocaleString('en-IN')}${l.job_details.salary_min && l.job_details.salary_max && l.job_details.salary_min !== l.job_details.salary_max ? `–₹${(l.job_details.salary_max / 100).toLocaleString('en-IN')}` : ''} / ${l.job_details.salary_period || 'month'}`
+                            : 'Salary not disclosed'}
+                          {' · '}{l.job_details.job_type} · {l.job_details.openings} opening{l.job_details.openings === 1 ? '' : 's'} · <span style={{ color: meta.color, fontWeight: 600 }}>{meta.label}</span>
+                        </div>
+                      ) : l.agri_details ? (
+                        <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                          &#8377;{(l.price / 100).toLocaleString('en-IN')}/{l.unit || 'unit'} · Stock: {l.quantity || 0} {l.unit || 'units'}
+                          {l.agri_details.is_organic ? ' · 🌱 Organic' : ''} · <span style={{ color: meta.color, fontWeight: 600 }}>{meta.label}</span>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                          &#8377;{(l.price / 100).toLocaleString('en-IN')} · Stock: {l.quantity || 100} units · <span style={{ color: meta.color, fontWeight: 600 }}>{meta.label}</span>
+                        </div>
+                      )}
                     </div>
                     <div style={{ display: 'flex', gap: 8 }}>
+                      {l.job_details && (
+                        <button className="btn btn-outline btn-sm" onClick={() => setApplicantsFor({ id: l.id, title: l.title })} title="View who applied">
+                          Applicants
+                        </button>
+                      )}
                       {l.status === 'active' && (
                         <button className="btn btn-outline btn-sm" disabled={busy} onClick={() => handlePauseListing(l.id)} title="Temporarily take this listing down (reversible)">
                           {busy ? '...' : 'Pause'}
@@ -961,6 +994,26 @@ export const SellerDashboard: React.FC = () => {
         onClose={() => setIsPublishModalOpen(false)}
         onSuccess={loadData}
         categories={categories}
+      />
+
+      <PublishJobModal
+        isOpen={isPublishJobModalOpen}
+        onClose={() => setIsPublishJobModalOpen(false)}
+        onSuccess={loadData}
+        jobsCategoryId={categories.find((c: any) => c.name === 'Jobs')?.id || null}
+      />
+
+      <PublishAgriModal
+        isOpen={isPublishAgriModalOpen}
+        onClose={() => setIsPublishAgriModalOpen(false)}
+        onSuccess={loadData}
+        agriCategoryId={categories.find((c: any) => c.name === 'Agriculture')?.id || null}
+      />
+
+      <JobApplicantsModal
+        listingId={applicantsFor?.id || null}
+        listingTitle={applicantsFor?.title || ''}
+        onClose={() => setApplicantsFor(null)}
       />
 
       <EditListingModal

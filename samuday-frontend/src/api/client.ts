@@ -145,6 +145,12 @@ export const marketAPI = {
   getListings: (params?: string) => apiFetch(`/marketplace/listings${params ? '?' + params : ''}`),
   getListing: (id: string) => apiFetch(`/marketplace/listings/${id}`),
   createListing: (data: any) => apiFetch('/marketplace/listings', { method: 'POST', body: JSON.stringify(data) }),
+  createJobListing: (data: any) => apiFetch('/marketplace/listings/jobs', { method: 'POST', body: JSON.stringify(data) }),
+  createAgriListing: (data: any) => apiFetch('/marketplace/listings/agri', { method: 'POST', body: JSON.stringify(data) }),
+  applyToJob: (listingId: string, message?: string) =>
+    apiFetch(`/marketplace/listings/${listingId}/apply`, { method: 'POST', body: JSON.stringify({ message }) }),
+  getJobApplications: (listingId: string) => apiFetch(`/marketplace/listings/${listingId}/applications`),
+  getMyApplications: () => apiFetch('/marketplace/applications/mine'),
   updateListing: (id: string, data: any) => apiFetch(`/marketplace/listings/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   getMyListings: () => apiFetch('/marketplace/listings/mine'),
   pauseListing: (id: string) => apiFetch(`/marketplace/listings/${id}/pause`, { method: 'POST' }),

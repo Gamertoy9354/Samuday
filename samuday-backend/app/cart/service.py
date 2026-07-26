@@ -7,12 +7,16 @@ from sqlalchemy.orm import selectinload
 
 from app.cart.models import CartItem
 from app.cart.schemas import CartItemResponse, CartSummaryResponse
-from app.marketplace.models import Listing, ListingMedia
+from app.marketplace.models import Listing, ListingMedia, JobListing
 
 logger = logging.getLogger(__name__)
 
 async def add_to_cart(db: AsyncSession, user_id: UUID, listing_id: UUID, quantity: int = 1) -> CartItem:
     """Add an item to cart, or update quantity if already exists."""
+    job_check = await db.execute(select(JobListing.id).where(JobListing.listing_id == listing_id))
+    if job_check.scalar():
+        raise ValueError("This is a job listing — use Apply instead of adding it to your cart.")
+
     result = await db.execute(
         select(CartItem).where(
             and_(CartItem.user_id == user_id, CartItem.listing_id == listing_id)

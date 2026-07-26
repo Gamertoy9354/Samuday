@@ -10,8 +10,11 @@ from sqlalchemy.orm import selectinload
 from app.core.middleware import t
 from app.core.cache import cache_get, cache_set, cache_delete_prefix
 from app.identity.models import User, ReputationScore
-from app.marketplace.models import Category, Listing, ListingMedia, Order, Review, Chat, ChatMessage, Address
-from app.marketplace.schemas import CategoryCreate, ListingCreate, ListingUpdate, OrderCreate, ReviewCreate, AddressCreate
+from app.marketplace.models import Category, Listing, ListingMedia, Order, Review, Chat, ChatMessage, Address, JobListing, JobApplication, AgriListing
+from app.marketplace.schemas import (
+    CategoryCreate, ListingCreate, ListingUpdate, OrderCreate, ReviewCreate, AddressCreate,
+    JobListingCreate, AgriListingCreate, JobApplicationCreate,
+)
 from app.marketplace.fees import calculate_order_fees
 from app.wallet.service import hold_escrow, release_escrow, refund_escrow
 from app.search.service import sync_listing_to_search
@@ -175,7 +178,14 @@ async def _enrich_listings(db: AsyncSession, listings: List[Listing]) -> List[Li
     for sale in sale_rows.scalars().all():
         sales_by_seller.setdefault(sale.seller_id, []).append(sale)
 
+    job_rows = await db.execute(select(JobListing).where(JobListing.listing_id.in_(ids)))
+    job_by_listing = {j.listing_id: j for j in job_rows.scalars().all()}
+    agri_rows = await db.execute(select(AgriListing).where(AgriListing.listing_id.in_(ids)))
+    agri_by_listing = {a.listing_id: a for a in agri_rows.scalars().all()}
+
     for listing in listings:
+        listing.job_details = job_by_listing.get(listing.id)
+        listing.agri_details = agri_by_listing.get(listing.id)
         rating_avg, review_count = rating_map.get(listing.id, (None, 0))
         listing.rating_avg = rating_avg
         listing.review_count = review_count
@@ -287,6 +297,28 @@ def _listing_to_cache_dict(l: Listing) -> dict:
         "rating_avg": getattr(l, "rating_avg", None),
         "review_count": getattr(l, "review_count", 0),
         "active_discount_percent": getattr(l, "active_discount_percent", None),
+        "job_details": _job_details_to_dict(getattr(l, "job_details", None)),
+        "agri_details": _agri_details_to_dict(getattr(l, "agri_details", None)),
+    }
+
+def _job_details_to_dict(j) -> Optional[dict]:
+    if not j:
+        return None
+    return {
+        "job_type": j.job_type, "salary_min": j.salary_min, "salary_max": j.salary_max,
+        "salary_period": j.salary_period, "experience_required": j.experience_required,
+        "openings": j.openings,
+        "application_deadline": j.application_deadline.isoformat() if j.application_deadline else None,
+        "contact_email": j.contact_email,
+    }
+
+def _agri_details_to_dict(a) -> Optional[dict]:
+    if not a:
+        return None
+    return {
+        "crop_type": a.crop_type, "is_organic": a.is_organic,
+        "harvest_date": a.harvest_date.isoformat() if a.harvest_date else None,
+        "grade": a.grade,
     }
 
 async def get_seller_public_profile(db: AsyncSession, seller_id: UUID) -> Optional[dict]:
@@ -470,6 +502,150 @@ async def update_listing(db: AsyncSession, seller_id: UUID, listing_id: UUID, up
     return enriched[0]
 
 
+# --- Jobs & Agriculture Listing Extensions ---
+
+async def create_job_listing(db: AsyncSession, seller_id: UUID, job_in: JobListingCreate) -> Listing:
+    """
+    Creates a Jobs-category listing plus its JobListing extension row (salary, job type,
+    application details) in one flow. Reuses create_listing for the shared columns — the
+    listing's price is derived from salary_min/salary_max since Jobs postings don't have
+    a buyable price, and listing_type is forced to "job" so the buy/cart flow can be
+    guarded against it (buyers apply instead, see apply_to_job).
+    """
+    effective_price = job_in.salary_min if job_in.salary_min is not None else (job_in.salary_max or 0)
+    base_in = ListingCreate(
+        pillar=job_in.pillar,
+        category_id=job_in.category_id,
+        title=job_in.title,
+        description=job_in.description,
+        price=effective_price,
+        listing_type="job",
+        quantity=job_in.quantity,
+        unit=None,
+        location_geohash=job_in.location_geohash,
+        media_urls=job_in.media_urls,
+    )
+    listing = await create_listing(db, seller_id, base_in)
+
+    db.add(JobListing(
+        listing_id=listing.id,
+        job_type=job_in.job_type,
+        salary_min=job_in.salary_min,
+        salary_max=job_in.salary_max,
+        salary_period=job_in.salary_period,
+        experience_required=job_in.experience_required,
+        openings=job_in.quantity,
+        application_deadline=job_in.application_deadline,
+        contact_email=job_in.contact_email,
+    ))
+    await db.commit()
+
+    return await get_listing_by_id(db, listing.id)
+
+async def create_agri_listing(db: AsyncSession, seller_id: UUID, agri_in: AgriListingCreate) -> Listing:
+    """Creates an Agriculture-category listing plus its AgriListing extension row (crop type, unit-based price, organic/harvest/grade)."""
+    base_in = ListingCreate(
+        pillar=agri_in.pillar,
+        category_id=agri_in.category_id,
+        title=agri_in.title,
+        description=agri_in.description,
+        price=agri_in.price,
+        listing_type="crop",
+        quantity=agri_in.quantity,
+        unit=agri_in.unit,
+        location_geohash=agri_in.location_geohash,
+        media_urls=agri_in.media_urls,
+        weight_grams=agri_in.weight_grams,
+        length_cm=agri_in.length_cm,
+        width_cm=agri_in.width_cm,
+        height_cm=agri_in.height_cm,
+        available_offers=agri_in.available_offers,
+        return_policy=agri_in.return_policy,
+    )
+    listing = await create_listing(db, seller_id, base_in)
+
+    db.add(AgriListing(
+        listing_id=listing.id,
+        crop_type=agri_in.crop_type,
+        is_organic=agri_in.is_organic,
+        harvest_date=agri_in.harvest_date,
+        grade=agri_in.grade,
+    ))
+    await db.commit()
+
+    return await get_listing_by_id(db, listing.id)
+
+async def apply_to_job(db: AsyncSession, listing_id: UUID, applicant_id: UUID, payload: JobApplicationCreate) -> JobApplication:
+    """Submits a buyer's application to a Jobs listing — the Jobs-flow equivalent of placing an order."""
+    result = await db.execute(select(Listing).where(Listing.id == listing_id))
+    listing = result.scalars().first()
+    if not listing:
+        raise ValueError(t("listing.not_found"))
+    if listing.seller_id == applicant_id:
+        raise ValueError("You cannot apply to your own job listing.")
+
+    job_result = await db.execute(select(JobListing).where(JobListing.listing_id == listing_id))
+    if not job_result.scalars().first():
+        raise ValueError("This listing is not a job posting.")
+
+    existing = await db.execute(
+        select(JobApplication).where(
+            and_(JobApplication.listing_id == listing_id, JobApplication.applicant_id == applicant_id)
+        )
+    )
+    if existing.scalars().first():
+        raise ValueError("You have already applied to this job.")
+
+    application = JobApplication(listing_id=listing_id, applicant_id=applicant_id, message=payload.message)
+    db.add(application)
+    await db.commit()
+    await db.refresh(application)
+    return application
+
+async def get_job_applications(db: AsyncSession, seller_id: UUID, listing_id: UUID) -> List[dict]:
+    """Seller-only: returns everyone who applied to one of their job listings, most recent first."""
+    result = await db.execute(select(Listing).where(Listing.id == listing_id))
+    listing = result.scalars().first()
+    if not listing:
+        raise ValueError(t("listing.not_found"))
+    if listing.seller_id != seller_id:
+        raise PermissionError("You do not own this listing.")
+
+    from app.identity.service import get_user_by_id
+
+    rows = (await db.execute(
+        select(JobApplication).where(JobApplication.listing_id == listing_id).order_by(JobApplication.applied_at.desc())
+    )).scalars().all()
+
+    applicants = []
+    for app in rows:
+        user = await get_user_by_id(db, app.applicant_id)
+        applicants.append({
+            "id": app.id, "listing_id": app.listing_id, "applicant_id": app.applicant_id,
+            "applicant_name": user.full_name if user else None,
+            "applicant_phone": user.phone_number if user else None,
+            "listing_title": listing.title,
+            "message": app.message, "status": app.status, "applied_at": app.applied_at,
+        })
+    return applicants
+
+async def get_my_applications(db: AsyncSession, applicant_id: UUID) -> List[dict]:
+    """Buyer-side: the jobs the current user has applied to, most recent first."""
+    result = await db.execute(
+        select(JobApplication, Listing.title)
+        .join(Listing, Listing.id == JobApplication.listing_id)
+        .where(JobApplication.applicant_id == applicant_id)
+        .order_by(JobApplication.applied_at.desc())
+    )
+    return [
+        {
+            "id": app.id, "listing_id": app.listing_id, "applicant_id": app.applicant_id,
+            "listing_title": title, "message": app.message, "status": app.status, "applied_at": app.applied_at,
+        }
+        for app, title in result.all()
+    ]
+
+
 # --- Order & Escrow Services ---
 
 async def create_order(db: AsyncSession, buyer_id: UUID, order_in: OrderCreate) -> Order:
@@ -492,6 +668,9 @@ async def create_order(db: AsyncSession, buyer_id: UUID, order_in: OrderCreate) 
         raise ValueError("You cannot purchase your own listing.")
     if listing.quantity < order_in.quantity:
         raise ValueError("Requested quantity exceeds available stock.")
+    job_check = await db.execute(select(JobListing.id).where(JobListing.listing_id == listing.id))
+    if job_check.scalar():
+        raise ValueError("This is a job listing — use Apply instead of Buy.")
 
     product_amount = listing.price * order_in.quantity
     fees = calculate_order_fees(product_amount)

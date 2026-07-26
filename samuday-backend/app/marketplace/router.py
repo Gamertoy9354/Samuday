@@ -17,6 +17,7 @@ from app.marketplace.schemas import (
     OrderCreate, OrderResponse, OrderDetailResponse, ReviewCreate, ReviewUpdate, ReviewResponse, ReviewReplyCreate,
     ChatCreate, ChatResponse, ChatMessageCreate, ChatMessageResponse,
     AddressCreate, AddressResponse,
+    JobListingCreate, AgriListingCreate, JobApplicationCreate, JobApplicationResponse,
 )
 
 router = APIRouter(prefix="/marketplace", tags=["Marketplace Core"])
@@ -113,6 +114,24 @@ async def create_listing_endpoint(
     """Creates a product or service listing, syncing it to the search database."""
     listing = await service.create_listing(db, current_user.id, payload)
     return listing
+
+@router.post("/listings/jobs", response_model=ListingResponse, status_code=status.HTTP_201_CREATED)
+async def create_job_listing_endpoint(
+    payload: JobListingCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Creates a Jobs-category listing with salary/employment fields. Buyers apply instead of buying — see /listings/{id}/apply."""
+    return await service.create_job_listing(db, current_user.id, payload)
+
+@router.post("/listings/agri", response_model=ListingResponse, status_code=status.HTTP_201_CREATED)
+async def create_agri_listing_endpoint(
+    payload: AgriListingCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Creates an Agriculture-category listing with crop/unit-based produce fields (organic, harvest date, grade)."""
+    return await service.create_agri_listing(db, current_user.id, payload)
 
 @router.get("/listings", response_model=List[ListingResponse])
 async def get_listings_endpoint(
@@ -225,6 +244,49 @@ async def remove_listing_endpoint(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# --- Job Application Endpoints ---
+
+@router.get("/applications/mine", response_model=List[JobApplicationResponse])
+async def get_my_applications_endpoint(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Buyer-side: the jobs the current user has applied to, most recent first."""
+    return await service.get_my_applications(db, current_user.id)
+
+@router.post("/listings/{listing_id}/apply", response_model=JobApplicationResponse, status_code=status.HTTP_201_CREATED)
+async def apply_to_job_endpoint(
+    listing_id: UUID,
+    payload: JobApplicationCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Applies to a Jobs listing — the Jobs-flow equivalent of Buy Now/Add to Cart."""
+    try:
+        application = await service.apply_to_job(db, listing_id, current_user.id, payload)
+        return JobApplicationResponse(
+            id=application.id, listing_id=application.listing_id, applicant_id=application.applicant_id,
+            applicant_name=current_user.full_name, message=application.message,
+            status=application.status, applied_at=application.applied_at,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+@router.get("/listings/{listing_id}/applications", response_model=List[JobApplicationResponse])
+async def get_job_applications_endpoint(
+    listing_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Seller-only: everyone who applied to this job listing."""
+    try:
+        return await service.get_job_applications(db, current_user.id, listing_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 
 # --- Orders & Escrow Endpoints ---

@@ -1,6 +1,6 @@
 import uuid
-from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, ForeignKey, BigInteger, Integer, Float, Boolean, Text, UniqueConstraint, Index
+from datetime import datetime, timezone, date
+from sqlalchemy import Column, String, DateTime, Date, ForeignKey, BigInteger, Integer, Float, Boolean, Text, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -76,6 +76,53 @@ class ListingMedia(Base):
     sort_order = Column(Integer, default=0, nullable=False)
 
     listing = relationship("Listing", back_populates="media")
+
+class JobListing(Base):
+    """1:1 extension of a Jobs-category Listing — salary/employment details that don't fit the generic product schema."""
+    __tablename__ = "job_listings"
+    __table_args__ = {"schema": "marketplace"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    listing_id = Column(UUID(as_uuid=True), ForeignKey("marketplace.listings.id", ondelete="CASCADE"), nullable=False, unique=True)
+    job_type = Column(String, nullable=False)  # full-time, part-time, contract, internship, gig
+    salary_min = Column(BigInteger, nullable=True)  # paise
+    salary_max = Column(BigInteger, nullable=True)  # paise
+    salary_period = Column(String, nullable=True)  # monthly, yearly, hourly
+    experience_required = Column(String, nullable=True)
+    openings = Column(Integer, default=1, nullable=False)
+    application_deadline = Column(DateTime(timezone=True), nullable=True)
+    contact_email = Column(String, nullable=True)
+
+    listing = relationship("Listing", backref="job_details_row")
+
+class JobApplication(Base):
+    """A buyer's application to a Jobs-category listing — replaces Order/CartItem for the Jobs flow."""
+    __tablename__ = "job_applications"
+    __table_args__ = (
+        UniqueConstraint("listing_id", "applicant_id", name="uq_job_application_listing_applicant"),
+        {"schema": "marketplace"},
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    listing_id = Column(UUID(as_uuid=True), ForeignKey("marketplace.listings.id", ondelete="CASCADE"), nullable=False, index=True)
+    applicant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    message = Column(Text, nullable=True)
+    status = Column(String, default="submitted", nullable=False)  # submitted, viewed, shortlisted, rejected
+    applied_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+class AgriListing(Base):
+    """1:1 extension of an Agriculture-category Listing — crop/produce details for a mandi-style listing."""
+    __tablename__ = "agri_listings"
+    __table_args__ = {"schema": "marketplace"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    listing_id = Column(UUID(as_uuid=True), ForeignKey("marketplace.listings.id", ondelete="CASCADE"), nullable=False, unique=True)
+    crop_type = Column(String, nullable=True)
+    is_organic = Column(Boolean, default=False, nullable=False)
+    harvest_date = Column(Date, nullable=True)
+    grade = Column(String, nullable=True)  # e.g. A / Premium, B / Standard, C / Economy
+
+    listing = relationship("Listing", backref="agri_details_row")
 
 class Order(Base):
     __tablename__ = "orders"

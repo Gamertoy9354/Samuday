@@ -25,8 +25,11 @@ async def add_to_cart_endpoint(
     db: AsyncSession = Depends(get_db)
 ):
     """Adds an item to the cart (or increments quantity if already in cart)."""
-    item = await service.add_to_cart(db, current_user.id, payload.listing_id, payload.quantity)
-    return {"status": "added", "item_id": str(item.id), "quantity": item.quantity}
+    try:
+        item = await service.add_to_cart(db, current_user.id, payload.listing_id, payload.quantity)
+        return {"status": "added", "item_id": str(item.id), "quantity": item.quantity}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.put("/{item_id}")
 async def update_cart_item_endpoint(

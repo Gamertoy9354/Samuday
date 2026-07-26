@@ -12,10 +12,30 @@ from datetime import datetime, timezone, timedelta
 
 from app.core.database import AsyncSessionLocal, init_db
 from app.identity.models import User
-from app.marketplace.models import Category, Listing, ListingMedia
+from app.marketplace.models import Category, Listing, ListingMedia, JobListing, AgriListing
 from app.promotions.models import SaleEvent, Advertisement
 from app.wallet.models import Wallet
 from sqlalchemy import select
+
+# Jobs-category demo listings get a JobListing extension row so they show salary/apply
+# UI instead of buy/cart. Keyed by title: (job_type, salary_paise, salary_period, experience_required, openings)
+JOB_DETAILS_BY_TITLE = {
+    "Assistant Agri-Business Manager": ("full-time", 5000000, "monthly", "2+ years", 1),
+    "Customer Support Executive": ("full-time", 3000000, "monthly", None, 1),
+    "E-Commerce Fulfillment Associate": ("full-time", 2000000, "monthly", "Freshers welcome", 1),
+    "Field Operations Supervisor": ("full-time", 3500000, "monthly", None, 1),
+    "Retail Store Sales Assistant": ("full-time", 1800000, "monthly", None, 1),
+}
+
+# Agriculture-category demo listings get an AgriListing extension row (crop type, organic,
+# grade) plus a proper selling unit. Keyed by title: (crop_type, is_organic, grade, unit)
+AGRI_DETAILS_BY_TITLE = {
+    "Organic Sharbati Wheat - 50kg Bag": ("Wheat", True, "A", "bag"),
+    "Fresh Alphonso Mangoes - 5kg Box": ("Alphonso Mango", False, None, "box"),
+    "Organic Basmati Rice - 25kg": ("Basmati Rice", True, None, "bag"),
+    "Cold-Pressed Groundnut Oil - 5L": ("Groundnut Oil", False, None, "bottle"),
+    "Organic A2 Cow Ghee - 1kg": ("Cow Ghee", False, None, "jar"),
+}
 
 # Unsplash image URLs for different categories (real, free images)
 IMAGES = {
@@ -85,6 +105,35 @@ IMAGES = {
         "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=1200&h=400&fit=crop",
         "https://images.unsplash.com/photo-1607083206869-4c7672e72a8a?w=1200&h=400&fit=crop",
         "https://images.unsplash.com/photo-1472851294608-062f824d29cc?w=1200&h=400&fit=crop",
+    ],
+    # Festivals, exhibitions, workshops — for the Events pillar (not physical products,
+    # so product-photo buckets like "agriculture"/"fashion" don't fit these listings).
+    "events": [
+        "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1511578314322-379afb476865?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1533900298318-6b8da08a523e?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1545128485-c400e7702796?w=400&h=400&fit=crop",
+    ],
+    # Houses, apartments, commercial units, land plots — for the Real Estate pillar.
+    "realestate": [
+        "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1568605114967-8130f3a36994?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1441984904996-e0b6ba687e04?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1587293852726-70cdb56c2866?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1565610222536-ef125c59da2e?w=400&h=400&fit=crop",
+    ],
+    # Workplace, hiring, teams — for the Jobs pillar.
+    "jobs": [
+        "https://images.unsplash.com/photo-1521737604893-d14cc237f11d?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1600880292203-757bb62b4baf?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1573497491208-6b1acb260507?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1556761175-5973dc0f32e7?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1521791136064-7986c2920216?w=400&h=400&fit=crop",
+        "https://images.unsplash.com/photo-1600880292089-90a7e086ee0c?w=400&h=400&fit=crop",
     ],
 }
 
@@ -158,25 +207,25 @@ DEMO_PRODUCTS = [
     {"title": "Bosch Professional Angle Grinder 600W", "desc": "Ergonomic handheld metal/stone cutter. Spindle lock, dust protection, high power motor.", "price": 289900, "cat": "Industrial/B2B", "img": "home", "rating": 4.3, "reviews": 4567},
 
     # Events
-    {"title": "Farm-to-Table Weekend Experience", "desc": "2-day immersive farming experience in Gujarat. Organic farming workshop, local cuisine, village stay.", "price": 499900, "cat": "Events", "img": "agriculture", "rating": 4.8, "reviews": 234},
-    {"title": "Handloom Saree Exhibition - Varanasi", "desc": "Curated collection of Banarasi silk sarees. Direct from weavers. 500+ designs available.", "price": 0, "cat": "Events", "img": "fashion", "rating": 4.9, "reviews": 567},
-    {"title": "Organic Farmers Market Stall Ticket", "desc": "Weekend entry pass to local agriculture and produce marketplace. Meet local farmers.", "price": 25000, "cat": "Events", "img": "agriculture", "rating": 4.4, "reviews": 123},
-    {"title": "Traditional Garba Dance Workshop", "desc": "5-day intensive folk dance coaching with expert trainers. Navratri special preparation.", "price": 149900, "cat": "Events", "img": "fashion", "rating": 4.7, "reviews": 342},
-    {"title": "Delhi Street Food Festival Entry Voucher", "desc": "Unlimited tastings entry coupon for Delhi's heritage culinary festival. Over 100 stalls.", "price": 99900, "cat": "Events", "img": "grocery", "rating": 4.6, "reviews": 890},
+    {"title": "Farm-to-Table Weekend Experience", "desc": "2-day immersive farming experience in Gujarat. Organic farming workshop, local cuisine, village stay.", "price": 499900, "cat": "Events", "img": "events", "rating": 4.8, "reviews": 234},
+    {"title": "Handloom Saree Exhibition - Varanasi", "desc": "Curated collection of Banarasi silk sarees. Direct from weavers. 500+ designs available.", "price": 0, "cat": "Events", "img": "events", "rating": 4.9, "reviews": 567},
+    {"title": "Organic Farmers Market Stall Ticket", "desc": "Weekend entry pass to local agriculture and produce marketplace. Meet local farmers.", "price": 25000, "cat": "Events", "img": "events", "rating": 4.4, "reviews": 123},
+    {"title": "Traditional Garba Dance Workshop", "desc": "5-day intensive folk dance coaching with expert trainers. Navratri special preparation.", "price": 149900, "cat": "Events", "img": "events", "rating": 4.7, "reviews": 342},
+    {"title": "Delhi Street Food Festival Entry Voucher", "desc": "Unlimited tastings entry coupon for Delhi's heritage culinary festival. Over 100 stalls.", "price": 99900, "cat": "Events", "img": "events", "rating": 4.6, "reviews": 890},
 
     # Real Estate
-    {"title": "2 BHK Residential Apartment (Ahmedabad)", "desc": "1100 sqft semi-furnished apartment in prime location. Modern amenities, parking, 24/7 security.", "price": 450000000, "cat": "Real Estate", "img": "home", "rating": 4.4, "reviews": 12},
-    {"title": "Agricultural Land 5 Acres (Anand)", "desc": "High fertility organic soil farm land near highway. Irrigation pipeline and electricity ready.", "price": 250000000, "cat": "Real Estate", "img": "agriculture", "rating": 4.8, "reviews": 5},
-    {"title": "Commercial Shop Space (Indore Mall)", "desc": "Premium 450 sqft ground floor retail shop. High footfall, fully air conditioned.", "price": 850000000, "cat": "Real Estate", "img": "home", "rating": 4.5, "reviews": 23},
-    {"title": "3 BHK Luxury Villa for Rent (Gandhinagar)", "desc": "Fully furnished luxury villa with private garden, smart home automation, and swimming pool access.", "price": 4500000, "cat": "Real Estate", "img": "home", "rating": 4.9, "reviews": 9},
-    {"title": "Industrial Warehouse Space (Bhiwandi)", "desc": "15000 sqft warehouse with heavy dock load capacity, CCTV security, fire sprinklers, close to highway.", "price": 35000000, "cat": "Real Estate", "img": "home", "rating": 4.3, "reviews": 16},
+    {"title": "2 BHK Residential Apartment (Ahmedabad)", "desc": "1100 sqft semi-furnished apartment in prime location. Modern amenities, parking, 24/7 security.", "price": 450000000, "cat": "Real Estate", "img": "realestate", "rating": 4.4, "reviews": 12},
+    {"title": "Agricultural Land 5 Acres (Anand)", "desc": "High fertility organic soil farm land near highway. Irrigation pipeline and electricity ready.", "price": 250000000, "cat": "Real Estate", "img": "realestate", "rating": 4.8, "reviews": 5},
+    {"title": "Commercial Shop Space (Indore Mall)", "desc": "Premium 450 sqft ground floor retail shop. High footfall, fully air conditioned.", "price": 850000000, "cat": "Real Estate", "img": "realestate", "rating": 4.5, "reviews": 23},
+    {"title": "3 BHK Luxury Villa for Rent (Gandhinagar)", "desc": "Fully furnished luxury villa with private garden, smart home automation, and swimming pool access.", "price": 4500000, "cat": "Real Estate", "img": "realestate", "rating": 4.9, "reviews": 9},
+    {"title": "Industrial Warehouse Space (Bhiwandi)", "desc": "15000 sqft warehouse with heavy dock load capacity, CCTV security, fire sprinklers, close to highway.", "price": 35000000, "cat": "Real Estate", "img": "realestate", "rating": 4.3, "reviews": 16},
 
     # Jobs
-    {"title": "Assistant Agri-Business Manager", "desc": "Full-time job position. Manage supply chain, farmer relationships, and cold storage logistics. Experience: 2+ yrs.", "price": 5000000, "cat": "Jobs", "img": "education", "rating": 4.2, "reviews": 34},
-    {"title": "E-Commerce Fulfillment Associate", "desc": "Pack and ship product orders in our main warehouse. Shifts available. No experience required.", "price": 2000000, "cat": "Jobs", "img": "grocery", "rating": 4.1, "reviews": 56},
-    {"title": "Customer Support Executive", "desc": "Support super-platform users. Must speak Hindi, Gujarati, and English. Remote work optional.", "price": 3000000, "cat": "Jobs", "img": "electronics", "rating": 4.5, "reviews": 78},
-    {"title": "Retail Store Sales Assistant", "desc": "Help customers in local supermarket branch. Manage inventory shelf stocking. 6-day week.", "price": 1800000, "cat": "Jobs", "img": "grocery", "rating": 4.0, "reviews": 92},
-    {"title": "Field Operations Supervisor", "desc": "Supervise Kisan Hub machinery rentals and regional crop collection hubs. Must own bike.", "price": 3500000, "cat": "Jobs", "img": "agriculture", "rating": 4.4, "reviews": 18},
+    {"title": "Assistant Agri-Business Manager", "desc": "Full-time job position. Manage supply chain, farmer relationships, and cold storage logistics. Experience: 2+ yrs.", "price": 5000000, "cat": "Jobs", "img": "jobs", "rating": 4.2, "reviews": 34},
+    {"title": "E-Commerce Fulfillment Associate", "desc": "Pack and ship product orders in our main warehouse. Shifts available. No experience required.", "price": 2000000, "cat": "Jobs", "img": "jobs", "rating": 4.1, "reviews": 56},
+    {"title": "Customer Support Executive", "desc": "Support super-platform users. Must speak Hindi, Gujarati, and English. Remote work optional.", "price": 3000000, "cat": "Jobs", "img": "jobs", "rating": 4.5, "reviews": 78},
+    {"title": "Retail Store Sales Assistant", "desc": "Help customers in local supermarket branch. Manage inventory shelf stocking. 6-day week.", "price": 1800000, "cat": "Jobs", "img": "jobs", "rating": 4.0, "reviews": 92},
+    {"title": "Field Operations Supervisor", "desc": "Supervise Kisan Hub machinery rentals and regional crop collection hubs. Must own bike.", "price": 3500000, "cat": "Jobs", "img": "jobs", "rating": 4.4, "reviews": 18},
 ]
 
 # Sale events
@@ -304,7 +353,16 @@ async def seed_demo_data():
         for i, product in enumerate(DEMO_PRODUCTS):
             cat_id = categories.get(product["cat"])
             listing_type = product.get("type", "sale")
-            
+            unit = "piece"
+
+            job_details = JOB_DETAILS_BY_TITLE.get(product["title"])
+            agri_details = AGRI_DETAILS_BY_TITLE.get(product["title"])
+            if job_details:
+                listing_type = "job"
+            elif agri_details:
+                listing_type = "crop"
+                unit = agri_details[3]
+
             listing = Listing(
                 seller_id=SYSTEM_SELLER_ID,
                 pillar="marketplace",
@@ -314,13 +372,25 @@ async def seed_demo_data():
                 price=product["price"],
                 listing_type=listing_type,
                 quantity=random.randint(5, 500),
-                unit="piece",
+                unit=unit,
                 status="active"
             )
             db.add(listing)
             await db.flush()
             listing_ids.append(listing.id)
-            
+
+            if job_details:
+                job_type, salary, period, exp, openings = job_details
+                db.add(JobListing(
+                    listing_id=listing.id, job_type=job_type, salary_min=salary, salary_max=salary,
+                    salary_period=period, experience_required=exp, openings=openings,
+                ))
+            elif agri_details:
+                crop_type, is_organic, grade, _unit = agri_details
+                db.add(AgriListing(
+                    listing_id=listing.id, crop_type=crop_type, is_organic=is_organic, grade=grade,
+                ))
+
             # Add product image
             img_category = product["img"]
             img_list = IMAGES.get(img_category, IMAGES["electronics"])
