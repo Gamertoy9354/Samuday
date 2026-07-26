@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { marketAPI, aiAPI } from '../../api/client';
-import { Sprout, X, AlertCircle, CheckCircle, ImageIcon, Sparkles, RefreshCw, ZoomIn } from 'lucide-react';
+import { Sprout, X, AlertCircle, CheckCircle, ImageIcon, Sparkles, RefreshCw, ZoomIn, Mic } from 'lucide-react';
 
 type ImageVariant = { url: string; style: 'studio' | 'lifestyle' };
 
@@ -36,12 +36,61 @@ export const PublishAgriModal: React.FC<Props> = ({ isOpen, onClose, onSuccess, 
   const [uploadingImage, setUploadingImage] = useState(false);
   const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
   const [viewingImage, setViewingImage] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
   if (!isOpen) return null;
+
+  const handleVoiceRecord = async () => {
+    if (isRecording) {
+      if (mediaRecorder) {
+        mediaRecorder.stop();
+        setIsRecording(false);
+      }
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        if (audioBlob.size < 100) return;
+
+        setTranscribing(true);
+        setError('');
+        try {
+          const res = await aiAPI.transcribeAudio(audioBlob);
+          if (res.text) {
+            setDescription(prev => prev ? `${prev} ${res.text}` : res.text);
+            setNotice('🎙️ Audio transcribed successfully!');
+          }
+        } catch (err: any) {
+          setError(err.message || 'Voice transcription failed.');
+        } finally {
+          setTranscribing(false);
+        }
+      };
+
+      recorder.start();
+      setMediaRecorder(recorder);
+      setIsRecording(true);
+    } catch (err: any) {
+      alert('Microphone access denied: ' + err.message);
+    }
+  };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -205,8 +254,21 @@ export const PublishAgriModal: React.FC<Props> = ({ isOpen, onClose, onSuccess, 
           </div>
 
           <div className="form-group">
-            <label style={{ fontWeight: 600, fontSize: '0.85rem' }}>Description & Details</label>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={4} placeholder="Growing conditions, farm location, freshness, packaging..." />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <label style={{ fontWeight: 600, fontSize: '0.85rem' }}>Description & Details</label>
+              <button
+                type="button"
+                onClick={handleVoiceRecord}
+                className={`btn btn-sm ${isRecording ? 'btn-danger' : 'btn-outline'}`}
+                disabled={transcribing}
+                title="Speak the produce description instead of typing"
+                style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+              >
+                <Mic size={13} className={isRecording ? 'animate-pulse' : ''} />
+                {isRecording ? 'Listening...' : transcribing ? 'Transcribing...' : 'Speak'}
+              </button>
+            </div>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={4} placeholder="Growing conditions, farm location, freshness, packaging... or tap Speak to dictate" />
           </div>
 
           <div style={{ background: 'var(--bg-body)', padding: 16, borderRadius: 'var(--radius-md)', border: '1px solid var(--border-card)' }}>

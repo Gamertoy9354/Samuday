@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { marketAPI } from '../../api/client';
-import { Briefcase, X, AlertCircle, CheckCircle, ImageIcon } from 'lucide-react';
+import { marketAPI, aiAPI } from '../../api/client';
+import { Briefcase, X, AlertCircle, CheckCircle, ImageIcon, Mic } from 'lucide-react';
 
 interface Props {
   isOpen: boolean;
@@ -25,12 +25,61 @@ export const PublishJobModal: React.FC<Props> = ({ isOpen, onClose, onSuccess, j
   const [description, setDescription] = useState('');
   const [image, setImage] = useState('');
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
   if (!isOpen) return null;
+
+  const handleVoiceRecord = async () => {
+    if (isRecording) {
+      if (mediaRecorder) {
+        mediaRecorder.stop();
+        setIsRecording(false);
+      }
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        if (audioBlob.size < 100) return;
+
+        setTranscribing(true);
+        setError('');
+        try {
+          const res = await aiAPI.transcribeAudio(audioBlob);
+          if (res.text) {
+            setDescription(prev => prev ? `${prev} ${res.text}` : res.text);
+            setNotice('🎙️ Audio transcribed successfully!');
+          }
+        } catch (err: any) {
+          setError(err.message || 'Voice transcription failed.');
+        } finally {
+          setTranscribing(false);
+        }
+      };
+
+      recorder.start();
+      setMediaRecorder(recorder);
+      setIsRecording(true);
+    } catch (err: any) {
+      alert('Microphone access denied: ' + err.message);
+    }
+  };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -161,8 +210,21 @@ export const PublishJobModal: React.FC<Props> = ({ isOpen, onClose, onSuccess, j
           </div>
 
           <div className="form-group">
-            <label style={{ fontWeight: 600, fontSize: '0.85rem' }}>Job Description & Requirements *</label>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={5} placeholder="Role responsibilities, required skills, work timings, location..." required />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <label style={{ fontWeight: 600, fontSize: '0.85rem' }}>Job Description & Requirements *</label>
+              <button
+                type="button"
+                onClick={handleVoiceRecord}
+                className={`btn btn-sm ${isRecording ? 'btn-danger' : 'btn-outline'}`}
+                disabled={transcribing}
+                title="Speak the job description instead of typing"
+                style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+              >
+                <Mic size={13} className={isRecording ? 'animate-pulse' : ''} />
+                {isRecording ? 'Listening...' : transcribing ? 'Transcribing...' : 'Speak'}
+              </button>
+            </div>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={5} placeholder="Role responsibilities, required skills, work timings, location... or tap Speak to dictate" required />
           </div>
 
           <div className="form-group">
